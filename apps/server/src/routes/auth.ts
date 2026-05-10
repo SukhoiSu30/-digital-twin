@@ -28,7 +28,7 @@ router.get("/microsoft", (_req: Request, res: Response) => {
   authUrl.searchParams.set("redirect_uri", env.MICROSOFT_REDIRECT_URI);
   authUrl.searchParams.set("scope", MICROSOFT_SCOPES.join(" "));
   authUrl.searchParams.set("response_mode", "query");
-  authUrl.searchParams.set("prompt", "consent");
+  authUrl.searchParams.set("prompt", "select_account");
 
   res.redirect(authUrl.toString());
 });
