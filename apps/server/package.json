@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc --skipLibCheck --noEmit false",
     "start": "node dist/index.js",
     "lint": "eslint src/",
     "clean": "rimraf dist"
