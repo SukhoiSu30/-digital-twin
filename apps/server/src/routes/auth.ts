@@ -76,6 +76,11 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
     const profile: any = await profileResponse.json();
+    console.log("Microsoft profile response:", JSON.stringify(profile));
+
+    const userEmail = profile.mail || profile.userPrincipalName;
+    const userName = profile.displayName || "User";
+    console.log("Creating/updating user:", userEmail, userName);
 
     // Upsert user
     const user = await prisma.user.upsert({
