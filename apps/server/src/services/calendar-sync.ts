@@ -6,7 +6,7 @@
  * Called by the scheduler every 5 minutes.
  */
 
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { getMicrosoftToken } from "../utils/token-refresh";
 import { extractZoomLink, parseZoomUrl } from "../utils/zoom-url-parser";
 

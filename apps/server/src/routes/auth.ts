@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { env } from "../config/env";
 import { generateToken } from "../middleware/auth";
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 
 const router = Router();
 

@@ -11,7 +11,7 @@
 
 import crypto from "crypto";
 import { Router, Request, Response } from "express";
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { env } from "../config/env";
 import { leaveMeeting } from "../services/zoom-bot";
 import { processRecallTranscript } from "../services/transcription";

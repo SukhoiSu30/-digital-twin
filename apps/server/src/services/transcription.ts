@@ -10,7 +10,7 @@
 
 import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
 import { EventEmitter } from "events";
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { env } from "../config/env";
 import type { Server as SocketIOServer } from "socket.io";
 

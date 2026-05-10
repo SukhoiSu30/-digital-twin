@@ -3,7 +3,7 @@
  * Handles automatic token refresh for Microsoft and Zoom
  */
 
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { env } from "../config/env";
 
 const TOKEN_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry

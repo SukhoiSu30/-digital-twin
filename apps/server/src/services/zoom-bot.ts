@@ -11,7 +11,7 @@
  */
 
 import { EventEmitter } from "events";
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { env } from "../config/env";
 import { getZoomToken } from "../utils/token-refresh";
 

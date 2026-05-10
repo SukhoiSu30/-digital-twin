@@ -11,7 +11,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { env } from "../config/env";
 
 const anthropic = new Anthropic({ apiKey: env.CLAUDE_API_KEY });

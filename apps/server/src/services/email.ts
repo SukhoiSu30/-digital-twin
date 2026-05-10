@@ -5,7 +5,7 @@
  * Microsoft/Outlook email using Graph API.
  */
 
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { getMicrosoftToken } from "../utils/token-refresh";
 
 /**

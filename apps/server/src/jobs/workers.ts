@@ -7,7 +7,7 @@
  */
 
 import { Worker, Job } from "bullmq";
-import { prisma } from "@digital-twin/database";
+import { prisma } from "../lib/prisma";
 import { getRedisConnection, scheduleBotJoin, queueSummaryGeneration, queueEmailSend } from "./queues";
 import { syncAllUsers } from "../services/calendar-sync";
 import { joinMeeting, leaveMeeting, getActiveCount, MAX_CONCURRENT_BOTS } from "../services/zoom-bot";
