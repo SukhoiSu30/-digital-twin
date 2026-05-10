@@ -20,7 +20,7 @@ interface UserProfile {
 export function Settings() {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchProfile = async () => {
