@@ -149,9 +149,9 @@ export async function startTranscription(
   // ─── Audio Input ─────────────────────────────────────────
 
   // Listen for audio chunks from the Zoom bot
-  audioEmitter.on("audio", (chunk: Buffer) => {
+  audioEmitter.on("audio", (chunk: any) => {
     if (connection.getReadyState() === 1) {
-      connection.send(chunk);
+      connection.send(chunk as any);
     }
   });
 
