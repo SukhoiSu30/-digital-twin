@@ -62,9 +62,12 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
 
     const tokens: any = await tokenResponse.json();
 
+    console.log("Microsoft token response status:", tokenResponse.status);
+    console.log("Microsoft redirect_uri used:", env.MICROSOFT_REDIRECT_URI);
+
     if (tokens.error) {
-      console.error("Microsoft token error:", tokens);
-      res.redirect(`${env.FRONTEND_URL}/auth/error?message=${tokens.error_description}`);
+      console.error("Microsoft token error:", JSON.stringify(tokens, null, 2));
+      res.redirect(`${env.FRONTEND_URL}/auth/error?message=${encodeURIComponent(tokens.error_description || tokens.error)}`);
       return;
     }
 
@@ -110,9 +113,10 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
 
     // Redirect to frontend with token
     res.redirect(`${env.FRONTEND_URL}/auth/callback?token=${jwt}`);
-  } catch (error) {
-    console.error("Microsoft OAuth error:", error);
-    res.redirect(`${env.FRONTEND_URL}/auth/error?message=Authentication failed`);
+  } catch (error: any) {
+    console.error("Microsoft OAuth error:", error?.message || error);
+    console.error("Full error:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    res.redirect(`${env.FRONTEND_URL}/auth/error?message=${encodeURIComponent(error?.message || 'Authentication failed')}`);
   }
 });
 
