@@ -1,0 +1,26 @@
+{
+  "name": "digital-twin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Digital Twin — Meeting Agent that attends Zoom meetings, transcribes, and generates action items",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:web": "npm run dev -w apps/web",
+    "dev:server": "npm run dev -w apps/server",
+    "build": "npm run build --workspaces --if-present",
+    "build:web": "npm run build -w apps/web",
+    "build:server": "npm run build -w apps/server",
+    "db:generate": "npm run generate -w packages/database",
+    "db:migrate": "npm run migrate -w packages/database",
+    "db:studio": "npm run studio -w packages/database",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
