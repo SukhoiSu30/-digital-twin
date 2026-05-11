@@ -23,6 +23,12 @@ router.post("/join/:meetingId", async (req: Request, res: Response) => {
       return;
     }
 
+    // Prevent double-joining if bot is already active
+    if (meeting.status === "JOINING" || meeting.status === "IN_PROGRESS") {
+      res.status(400).json({ success: false, error: "Bot is already joining or in this meeting" });
+      return;
+    }
+
     // Create bot session record
     const botSession = await prisma.botSession.upsert({
       where: { meetingId: meeting.id },

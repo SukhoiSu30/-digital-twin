@@ -193,10 +193,10 @@ export function MeetingDetail() {
 
           {/* Action Buttons */}
           <div className="flex gap-2 mt-4">
-            {["DISCOVERED", "SCHEDULED"].includes(meeting.status) && (
+            {!["JOINING", "IN_PROGRESS"].includes(meeting.status) && meeting.zoomJoinUrl && (
               <Button size="sm" onClick={handleJoinBot}>
                 <Bot className="h-4 w-4 mr-1" />
-                Send Bot Now
+                Send Bot
               </Button>
             )}
             {["JOINING", "SCHEDULED"].includes(meeting.status) && (

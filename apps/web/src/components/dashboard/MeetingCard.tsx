@@ -100,7 +100,7 @@ export function MeetingCard({ meeting, onJoin, onLeave, onCancel, onViewDetails 
 
           {/* Action buttons */}
           <div className="flex gap-2 pt-1">
-            {isUpcoming && meeting.status === "DISCOVERED" && onJoin && (
+            {!["JOINING", "IN_PROGRESS"].includes(meeting.status) && meeting.zoomJoinUrl && onJoin && (
               <Button size="sm" onClick={() => onJoin(meeting.id)}>
                 <Bot className="h-4 w-4 mr-1" />
                 Send Bot
