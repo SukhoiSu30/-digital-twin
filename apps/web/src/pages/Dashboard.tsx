@@ -54,9 +54,9 @@ const DEMO_MEETINGS = [
 
 export function Dashboard() {
   const navigate = useNavigate();
-  const [meetings] = useState(DEMO_MEETINGS);
+  const [meetings, setMeetings] = useState(DEMO_MEETINGS);
   const [syncing, setSyncing] = useState(false);
-  const [isAuthenticated] = useState(false);
+  const [isAuthenticated] = useState(() => !!api.getToken());
 
   const handleSync = async () => {
     setSyncing(true);
