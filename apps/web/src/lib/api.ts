@@ -84,6 +84,10 @@ class ApiClient {
     return this.request(`/bot/leave/${meetingId}`, { method: "POST" });
   }
 
+  cancelBot(meetingId: string) {
+    return this.request(`/meetings/${meetingId}/cancel-bot`, { method: "POST" });
+  }
+
   getBotStatus() {
     return this.request("/bot/status");
   }

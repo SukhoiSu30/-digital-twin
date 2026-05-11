@@ -103,8 +103,9 @@ export function Dashboard() {
             <MeetingCard
               key={meeting.id}
               meeting={meeting}
-              onJoin={(id) => api.joinMeeting(id)}
-              onLeave={(id) => api.leaveMeeting(id)}
+              onJoin={async (id) => { await api.joinMeeting(id); fetchMeetings(); }}
+              onLeave={async (id) => { await api.leaveMeeting(id); fetchMeetings(); }}
+              onCancel={async (id) => { await api.cancelBot(id); fetchMeetings(); }}
               onViewDetails={(id) => navigate(`/meetings/${id}`)}
             />
           ))}

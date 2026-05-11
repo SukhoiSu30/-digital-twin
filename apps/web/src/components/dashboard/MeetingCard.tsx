@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Calendar, Clock, Video, Bot, FileText } from "lucide-react";
+import { Calendar, Clock, Video, Bot, FileText, XCircle } from "lucide-react";
 
 interface Meeting {
   id: string;
@@ -20,6 +20,7 @@ interface MeetingCardProps {
   meeting: Meeting;
   onJoin?: (id: string) => void;
   onLeave?: (id: string) => void;
+  onCancel?: (id: string) => void;
   onToggleAutoJoin?: (id: string, autoJoin: boolean) => void;
   onViewDetails?: (id: string) => void;
 }
@@ -35,7 +36,7 @@ const statusConfig: Record<string, { label: string; variant: "default" | "second
   SKIPPED: { label: "Skipped", variant: "outline" },
 };
 
-export function MeetingCard({ meeting, onJoin, onLeave, onViewDetails }: MeetingCardProps) {
+export function MeetingCard({ meeting, onJoin, onLeave, onCancel, onViewDetails }: MeetingCardProps) {
   const start = new Date(meeting.startTime);
   const end = new Date(meeting.endTime);
   const now = new Date();
@@ -103,6 +104,12 @@ export function MeetingCard({ meeting, onJoin, onLeave, onViewDetails }: Meeting
               <Button size="sm" onClick={() => onJoin(meeting.id)}>
                 <Bot className="h-4 w-4 mr-1" />
                 Send Bot
+              </Button>
+            )}
+            {["JOINING", "SCHEDULED"].includes(meeting.status) && onCancel && (
+              <Button size="sm" variant="destructive" onClick={() => onCancel(meeting.id)}>
+                <XCircle className="h-4 w-4 mr-1" />
+                Cancel Bot
               </Button>
             )}
             {isLive && onLeave && (

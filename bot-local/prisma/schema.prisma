@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users ───────────────────────────────────────────────────
+
+model User {
+  id          String       @id @default(uuid())
+  email       String       @unique
+  displayName String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  oauthTokens OAuthToken[]
+  meetings    Meeting[]
+}
+
+// ─── OAuth Tokens ────────────────────────────────────────────
+
+model OAuthToken {
+  id           String   @id @default(uuid())
+  userId       String
+  provider     String   // "microsoft" | "zoom"
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  scopes       String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+}
+
+// ─── Meetings ────────────────────────────────────────────────
+
+model Meeting {
+  id                  String              @id @default(uuid())
+  userId              String
+  externalId          String              // Calendar event ID from Graph API
+  title               String
+  description         String?
+  startTime           DateTime
+  endTime             DateTime
+  zoomMeetingId       String?
+  zoomJoinUrl         String?
+  zoomPasscode        String?
+  status              MeetingStatus       @default(DISCOVERED)
+  autoJoin            Boolean             @default(true)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  botSession          BotSession?
+  transcriptSegments  TranscriptSegment[]
+  summary             Summary?
+  actionItems         ActionItem[]
+
+  @@unique([userId, externalId])
+  @@index([userId, startTime])
+  @@index([status])
+}
+
+enum MeetingStatus {
+  DISCOVERED
+  SCHEDULED
+  JOINING
+  IN_PROGRESS
+  PROCESSING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+// ─── Bot Sessions ────────────────────────────────────────────
+
+model BotSession {
+  id            String    @id @default(uuid())
+  meetingId     String    @unique
+  zoomBotId     String?
+  joinedAt      DateTime?
+  leftAt        DateTime?
+  audioStreamId String?
+  status        String    // "connecting" | "active" | "disconnected"
+  errorLog      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  meeting       Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+}
+
+// ─── Transcript Segments ─────────────────────────────────────
+
+model TranscriptSegment {
+  id         String   @id @default(uuid())
+  meetingId  String
+  speaker    String?
+  content    String
+  startMs    Int
+  endMs      Int
+  confidence Float?
+  isFinal    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  meeting    Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId, startMs])
+}
+
+// ─── Summaries ───────────────────────────────────────────────
+
+model Summary {
+  id          String    @id @default(uuid())
+  meetingId   String    @unique
+  overview    String
+  keyPoints   Json      // Array of strings
+  decisions   Json      // Array of strings
+  rawResponse String    // Full Claude API response
+  emailSentAt DateTime?
+  createdAt   DateTime  @default(now())
+  meeting     Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+}
+
+// ─── Action Items ────────────────────────────────────────────
+
+model ActionItem {
+  id          String    @id @default(uuid())
+  meetingId   String
+  title       String
+  description String?
+  assignee    String?
+  dueDate     DateTime?
+  priority    Priority  @default(MEDIUM)
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now())
+  meeting     Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId])
+  @@index([status])
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+// ─── Job Logs ────────────────────────────────────────────────
+
+model JobLog {
+  id           String    @id @default(uuid())
+  jobType      String    // "calendar_sync" | "bot_join" | "transcription" | "summary"
+  jobId        String
+  status       String    // "queued" | "running" | "completed" | "failed"
+  payload      Json?
+  result       Json?
+  errorMessage String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([jobType, status])
+}

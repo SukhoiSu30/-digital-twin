@@ -104,6 +104,43 @@ router.patch("/:id", async (req: Request, res: Response) => {
   }
 });
 
+// Cancel bot — withdraw from joining
+router.post("/:id/cancel-bot", async (req: Request, res: Response) => {
+  try {
+    const meeting = await prisma.meeting.findFirst({
+      where: { id: req.params.id, userId: req.user!.userId },
+    });
+
+    if (!meeting) {
+      res.status(404).json({ success: false, error: "Meeting not found" });
+      return;
+    }
+
+    if (!["JOINING", "SCHEDULED"].includes(meeting.status)) {
+      res.status(400).json({ success: false, error: "Bot can only be cancelled when joining or scheduled" });
+      return;
+    }
+
+    // Reset meeting status back to DISCOVERED
+    const updated = await prisma.meeting.update({
+      where: { id: req.params.id },
+      data: { status: "DISCOVERED" },
+    });
+
+    // Clean up any bot session
+    await prisma.botSession.deleteMany({
+      where: { meetingId: req.params.id },
+    });
+
+    console.log(`[Meetings] Bot cancelled for meeting "${meeting.title}"`);
+
+    res.json({ success: true, data: updated, message: "Bot cancelled" });
+  } catch (error) {
+    console.error("Error cancelling bot:", error);
+    res.status(500).json({ success: false, error: "Failed to cancel bot" });
+  }
+});
+
 // Delete meeting from tracking
 router.delete("/:id", async (req: Request, res: Response) => {
   try {

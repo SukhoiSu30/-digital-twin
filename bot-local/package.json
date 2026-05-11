@@ -1,0 +1,14 @@
+{
+  "name": "digital-twin-local-bot",
+  "version": "1.0.0",
+  "description": "Local Zoom bot - joins meetings via browser",
+  "scripts": {
+    "start": "node bot.js",
+    "watch": "node bot.js --watch"
+  },
+  "dependencies": {
+    "puppeteer": "^22.0.0",
+    "@prisma/client": "^6.1.0",
+    "prisma": "^6.1.0"
+  }
+}

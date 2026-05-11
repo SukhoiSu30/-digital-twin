@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LiveTranscript } from "@/components/meetings/LiveTranscript";
 import { SummaryPanel } from "@/components/meetings/SummaryPanel";
-import { ArrowLeft, Bot, Calendar, Clock, Video, RefreshCw } from "lucide-react";
+import { ArrowLeft, Bot, Calendar, Clock, Video, RefreshCw, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface MeetingData {
@@ -96,6 +96,16 @@ export function MeetingDetail() {
     }
   };
 
+  const handleCancelBot = async () => {
+    if (!id) return;
+    try {
+      await api.cancelBot(id);
+      fetchMeeting();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
   const handleLeaveBot = async () => {
     if (!id) return;
     try {
@@ -177,6 +187,12 @@ export function MeetingDetail() {
               <Button size="sm" onClick={handleJoinBot}>
                 <Bot className="h-4 w-4 mr-1" />
                 Send Bot Now
+              </Button>
+            )}
+            {["JOINING", "SCHEDULED"].includes(meeting.status) && (
+              <Button size="sm" variant="destructive" onClick={handleCancelBot}>
+                <XCircle className="h-4 w-4 mr-1" />
+                Cancel Bot
               </Button>
             )}
             {isLive && (
