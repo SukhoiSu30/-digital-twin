@@ -84,18 +84,124 @@ io.on("connection", (socket) => {
   });
 });
 
-// Sync database schema on startup
+// Sync database schema on startup using raw SQL
 async function syncDatabase() {
+  const { PrismaClient } = require("@prisma/client");
+  const db = new PrismaClient();
   try {
-    const { execSync } = require("child_process");
     console.log("  Syncing database schema...");
-    execSync("npx prisma db push --skip-generate", {
-      stdio: "inherit",
-      env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL },
-    });
-    console.log("  Database schema synced successfully");
-  } catch (error) {
-    console.warn("  [Warning] Database sync failed:", (error as Error).message);
+    await db.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "User" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "email" TEXT NOT NULL,
+        "displayName" TEXT NOT NULL DEFAULT 'User',
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"("email");
+
+      CREATE TABLE IF NOT EXISTS "OAuthToken" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "userId" TEXT NOT NULL,
+        "provider" TEXT NOT NULL,
+        "accessToken" TEXT NOT NULL,
+        "refreshToken" TEXT NOT NULL DEFAULT '',
+        "expiresAt" TIMESTAMP(3) NOT NULL,
+        "scopes" TEXT NOT NULL DEFAULT '',
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "OAuthToken_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "OAuthToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS "OAuthToken_userId_provider_key" ON "OAuthToken"("userId", "provider");
+
+      CREATE TABLE IF NOT EXISTS "Meeting" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "userId" TEXT NOT NULL,
+        "title" TEXT NOT NULL,
+        "startTime" TIMESTAMP(3) NOT NULL,
+        "endTime" TIMESTAMP(3),
+        "zoomMeetingId" TEXT,
+        "zoomJoinUrl" TEXT,
+        "zoomPassword" TEXT,
+        "status" TEXT NOT NULL DEFAULT 'upcoming',
+        "autoJoin" BOOLEAN NOT NULL DEFAULT false,
+        "calendarEventId" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "Meeting_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "Meeting_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS "BotSession" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "meetingId" TEXT NOT NULL UNIQUE,
+        "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "leftAt" TIMESTAMP(3),
+        "audioStreamId" TEXT,
+        "status" TEXT NOT NULL DEFAULT 'joining',
+        CONSTRAINT "BotSession_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "BotSession_meetingId_fkey" FOREIGN KEY ("meetingId") REFERENCES "Meeting"("id") ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS "TranscriptSegment" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "meetingId" TEXT NOT NULL,
+        "speaker" TEXT NOT NULL DEFAULT 'Unknown',
+        "content" TEXT NOT NULL,
+        "startMs" INTEGER NOT NULL DEFAULT 0,
+        "endMs" INTEGER NOT NULL DEFAULT 0,
+        "confidence" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "isFinal" BOOLEAN NOT NULL DEFAULT true,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "TranscriptSegment_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "TranscriptSegment_meetingId_fkey" FOREIGN KEY ("meetingId") REFERENCES "Meeting"("id") ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS "Summary" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "meetingId" TEXT NOT NULL UNIQUE,
+        "content" TEXT NOT NULL,
+        "keyTopics" TEXT[] DEFAULT ARRAY[]::TEXT[],
+        "decisions" TEXT[] DEFAULT ARRAY[]::TEXT[],
+        "generatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "Summary_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "Summary_meetingId_fkey" FOREIGN KEY ("meetingId") REFERENCES "Meeting"("id") ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS "ActionItem" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "meetingId" TEXT NOT NULL,
+        "title" TEXT NOT NULL,
+        "description" TEXT,
+        "assignee" TEXT,
+        "priority" TEXT NOT NULL DEFAULT 'MEDIUM',
+        "status" TEXT NOT NULL DEFAULT 'pending',
+        "dueDate" TIMESTAMP(3),
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "ActionItem_pkey" PRIMARY KEY ("id"),
+        CONSTRAINT "ActionItem_meetingId_fkey" FOREIGN KEY ("meetingId") REFERENCES "Meeting"("id") ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS "JobLog" (
+        "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
+        "jobType" TEXT NOT NULL,
+        "status" TEXT NOT NULL DEFAULT 'queued',
+        "meetingId" TEXT,
+        "error" TEXT,
+        "startedAt" TIMESTAMP(3),
+        "completedAt" TIMESTAMP(3),
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "JobLog_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    console.log("  Database schema synced successfully - all 8 tables ready");
+    await db.$disconnect();
+  } catch (error: any) {
+    console.error("  [Warning] Database sync error:", error?.message);
+    await db.$disconnect();
   }
 }
 
