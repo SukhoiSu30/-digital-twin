@@ -84,6 +84,21 @@ io.on("connection", (socket) => {
   });
 });
 
+// Sync database schema on startup
+async function syncDatabase() {
+  try {
+    const { execSync } = require("child_process");
+    console.log("  Syncing database schema...");
+    execSync("npx prisma db push --skip-generate", {
+      stdio: "inherit",
+      env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL },
+    });
+    console.log("  Database schema synced successfully");
+  } catch (error) {
+    console.warn("  [Warning] Database sync failed:", (error as Error).message);
+  }
+}
+
 // Start server
 httpServer.listen(env.PORT, async () => {
   console.log(`
@@ -95,6 +110,9 @@ httpServer.listen(env.PORT, async () => {
   ║  Environment: ${env.NODE_ENV.padEnd(25)}║
   ╚══════════════════════════════════════════╝
   `);
+
+  // Sync database tables
+  await syncDatabase();
 
   // Initialize background job system
   try {
