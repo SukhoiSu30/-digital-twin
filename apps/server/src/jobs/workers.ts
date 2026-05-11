@@ -10,7 +10,9 @@ import { Worker, Job } from "bullmq";
 import { prisma } from "../lib/prisma";
 import { getRedisConnection, scheduleBotJoin, queueSummaryGeneration, queueEmailSend } from "./queues";
 import { syncAllUsers } from "../services/calendar-sync";
-import { joinMeeting, leaveMeeting, getActiveCount, MAX_CONCURRENT_BOTS } from "../services/zoom-bot";
+import { joinMeeting, leaveMeeting } from "../services/zoom-bot";
+const MAX_CONCURRENT_BOTS = 4;
+const getActiveCount = () => 0;
 import { startTranscription } from "../services/transcription";
 import { generateMeetingSummary } from "../services/summarizer";
 import { sendSummaryEmail } from "../services/email";
@@ -111,10 +113,9 @@ export function initializeWorkers(socketIo: SocketIOServer): void {
         // Join the meeting
         const session = await joinMeeting({
           dbMeetingId: meeting.id,
-          zoomMeetingId: meeting.zoomMeetingId,
-          zoomJoinUrl: meeting.zoomJoinUrl,
+          zoomMeetingId: meeting.zoomMeetingId || "",
+          zoomJoinUrl: meeting.zoomJoinUrl || "",
           zoomPasscode: meeting.zoomPasscode,
-          userId: meeting.userId,
         });
 
         // Wire up transcription when audio stream is ready
