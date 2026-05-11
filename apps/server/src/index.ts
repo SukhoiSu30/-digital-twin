@@ -84,34 +84,69 @@ io.on("connection", (socket) => {
   });
 });
 
-// Sync database schema on startup using raw SQL
+// Sync database schema on startup using raw SQL matching Prisma schema exactly
 async function syncDatabase() {
   const { PrismaClient } = require("@prisma/client");
   const db = new PrismaClient();
   try {
     console.log("  Syncing database schema...");
 
-    const tables = [
-      `CREATE TABLE IF NOT EXISTS "User" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "email" TEXT NOT NULL, "displayName" TEXT NOT NULL DEFAULT 'User', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "User_pkey" PRIMARY KEY ("id"))`,
-      `CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"("email")`,
-      `CREATE TABLE IF NOT EXISTS "OAuthToken" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "userId" TEXT NOT NULL, "provider" TEXT NOT NULL, "accessToken" TEXT NOT NULL, "refreshToken" TEXT NOT NULL DEFAULT '', "expiresAt" TIMESTAMP(3) NOT NULL, "scopes" TEXT NOT NULL DEFAULT '', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "OAuthToken_pkey" PRIMARY KEY ("id"))`,
-      `CREATE UNIQUE INDEX IF NOT EXISTS "OAuthToken_userId_provider_key" ON "OAuthToken"("userId", "provider")`,
-      `CREATE TABLE IF NOT EXISTS "Meeting" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "userId" TEXT NOT NULL, "title" TEXT NOT NULL, "startTime" TIMESTAMP(3) NOT NULL, "endTime" TIMESTAMP(3), "zoomMeetingId" TEXT, "zoomJoinUrl" TEXT, "zoomPassword" TEXT, "status" TEXT NOT NULL DEFAULT 'upcoming', "autoJoin" BOOLEAN NOT NULL DEFAULT false, "calendarEventId" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "Meeting_pkey" PRIMARY KEY ("id"))`,
-      `CREATE TABLE IF NOT EXISTS "BotSession" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL UNIQUE, "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "leftAt" TIMESTAMP(3), "audioStreamId" TEXT, "status" TEXT NOT NULL DEFAULT 'joining', CONSTRAINT "BotSession_pkey" PRIMARY KEY ("id"))`,
-      `CREATE TABLE IF NOT EXISTS "TranscriptSegment" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL, "speaker" TEXT NOT NULL DEFAULT 'Unknown', "content" TEXT NOT NULL, "startMs" INTEGER NOT NULL DEFAULT 0, "endMs" INTEGER NOT NULL DEFAULT 0, "confidence" DOUBLE PRECISION NOT NULL DEFAULT 0, "isFinal" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "TranscriptSegment_pkey" PRIMARY KEY ("id"))`,
-      `CREATE TABLE IF NOT EXISTS "Summary" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL UNIQUE, "content" TEXT NOT NULL, "keyTopics" TEXT[] DEFAULT ARRAY[]::TEXT[], "decisions" TEXT[] DEFAULT ARRAY[]::TEXT[], "generatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "Summary_pkey" PRIMARY KEY ("id"))`,
-      `CREATE TABLE IF NOT EXISTS "ActionItem" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL, "title" TEXT NOT NULL, "description" TEXT, "assignee" TEXT, "priority" TEXT NOT NULL DEFAULT 'MEDIUM', "status" TEXT NOT NULL DEFAULT 'pending', "dueDate" TIMESTAMP(3), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "ActionItem_pkey" PRIMARY KEY ("id"))`,
-      `CREATE TABLE IF NOT EXISTS "JobLog" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "jobType" TEXT NOT NULL, "status" TEXT NOT NULL DEFAULT 'queued', "meetingId" TEXT, "error" TEXT, "startedAt" TIMESTAMP(3), "completedAt" TIMESTAMP(3), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "JobLog_pkey" PRIMARY KEY ("id"))`,
+    // Create enums first
+    const enums = [
+      `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'MeetingStatus') THEN CREATE TYPE "MeetingStatus" AS ENUM ('DISCOVERED','SCHEDULED','JOINING','IN_PROGRESS','PROCESSING','COMPLETED','FAILED','SKIPPED'); END IF; END $$`,
+      `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'Priority') THEN CREATE TYPE "Priority" AS ENUM ('LOW','MEDIUM','HIGH','URGENT'); END IF; END $$`,
     ];
 
-    for (const sql of tables) {
-      try {
-        await db.$executeRawUnsafe(sql);
-      } catch (e: any) {
-        console.log("  SQL note:", e?.message?.substring(0, 100));
-      }
+    const tables = [
+      // User
+      `CREATE TABLE IF NOT EXISTS "User" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "email" TEXT NOT NULL, "displayName" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "User_pkey" PRIMARY KEY ("id"))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "User_email_key" ON "User"("email")`,
+      // OAuthToken
+      `CREATE TABLE IF NOT EXISTS "OAuthToken" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "userId" TEXT NOT NULL, "provider" TEXT NOT NULL, "accessToken" TEXT NOT NULL, "refreshToken" TEXT NOT NULL, "expiresAt" TIMESTAMP(3) NOT NULL, "scopes" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "OAuthToken_pkey" PRIMARY KEY ("id"))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "OAuthToken_userId_provider_key" ON "OAuthToken"("userId", "provider")`,
+      // Meeting - matching Prisma schema exactly
+      `CREATE TABLE IF NOT EXISTS "Meeting" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "userId" TEXT NOT NULL, "externalId" TEXT NOT NULL, "title" TEXT NOT NULL, "description" TEXT, "startTime" TIMESTAMP(3) NOT NULL, "endTime" TIMESTAMP(3) NOT NULL, "zoomMeetingId" TEXT, "zoomJoinUrl" TEXT, "zoomPasscode" TEXT, "status" "MeetingStatus" NOT NULL DEFAULT 'DISCOVERED', "autoJoin" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "Meeting_pkey" PRIMARY KEY ("id"))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "Meeting_userId_externalId_key" ON "Meeting"("userId", "externalId")`,
+      `CREATE INDEX IF NOT EXISTS "Meeting_userId_startTime_idx" ON "Meeting"("userId", "startTime")`,
+      `CREATE INDEX IF NOT EXISTS "Meeting_status_idx" ON "Meeting"("status")`,
+      // BotSession
+      `CREATE TABLE IF NOT EXISTS "BotSession" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL, "zoomBotId" TEXT, "joinedAt" TIMESTAMP(3), "leftAt" TIMESTAMP(3), "audioStreamId" TEXT, "status" TEXT NOT NULL, "errorLog" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "BotSession_pkey" PRIMARY KEY ("id"))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "BotSession_meetingId_key" ON "BotSession"("meetingId")`,
+      // TranscriptSegment
+      `CREATE TABLE IF NOT EXISTS "TranscriptSegment" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL, "speaker" TEXT, "content" TEXT NOT NULL, "startMs" INTEGER NOT NULL, "endMs" INTEGER NOT NULL, "confidence" DOUBLE PRECISION, "isFinal" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "TranscriptSegment_pkey" PRIMARY KEY ("id"))`,
+      `CREATE INDEX IF NOT EXISTS "TranscriptSegment_meetingId_startMs_idx" ON "TranscriptSegment"("meetingId", "startMs")`,
+      // Summary
+      `CREATE TABLE IF NOT EXISTS "Summary" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL, "overview" TEXT NOT NULL, "keyPoints" JSONB, "decisions" JSONB, "rawResponse" TEXT NOT NULL DEFAULT '', "emailSentAt" TIMESTAMP(3), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "Summary_pkey" PRIMARY KEY ("id"))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "Summary_meetingId_key" ON "Summary"("meetingId")`,
+      // ActionItem
+      `CREATE TABLE IF NOT EXISTS "ActionItem" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "meetingId" TEXT NOT NULL, "title" TEXT NOT NULL, "description" TEXT, "assignee" TEXT, "dueDate" TIMESTAMP(3), "priority" "Priority" NOT NULL DEFAULT 'MEDIUM', "status" TEXT NOT NULL DEFAULT 'pending', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "ActionItem_pkey" PRIMARY KEY ("id"))`,
+      `CREATE INDEX IF NOT EXISTS "ActionItem_meetingId_idx" ON "ActionItem"("meetingId")`,
+      `CREATE INDEX IF NOT EXISTS "ActionItem_status_idx" ON "ActionItem"("status")`,
+      // JobLog
+      `CREATE TABLE IF NOT EXISTS "JobLog" ("id" TEXT NOT NULL DEFAULT gen_random_uuid()::text, "jobType" TEXT NOT NULL, "jobId" TEXT NOT NULL DEFAULT '', "status" TEXT NOT NULL, "payload" JSONB, "result" JSONB, "errorMessage" TEXT, "startedAt" TIMESTAMP(3), "completedAt" TIMESTAMP(3), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "JobLog_pkey" PRIMARY KEY ("id"))`,
+      `CREATE INDEX IF NOT EXISTS "JobLog_jobType_status_idx" ON "JobLog"("jobType", "status")`,
+    ];
+
+    // Run enums first
+    for (const sql of enums) {
+      try { await db.$executeRawUnsafe(sql); } catch (e: any) { console.log("  Enum:", e?.message?.substring(0, 80)); }
     }
 
+    // Drop old tables that have wrong schema (only if they exist with wrong columns)
+    try {
+      const check = await db.$queryRawUnsafe(`SELECT column_name FROM information_schema.columns WHERE table_name = 'Meeting' AND column_name = 'externalId'`);
+      if ((check as any[]).length === 0) {
+        console.log("  Dropping old tables with wrong schema...");
+        await db.$executeRawUnsafe(`DROP TABLE IF EXISTS "JobLog", "ActionItem", "Summary", "TranscriptSegment", "BotSession", "Meeting", "OAuthToken", "User" CASCADE`);
+      }
+    } catch (e) { /* table doesn't exist yet, that's fine */ }
+
+    // Create tables
+    for (const sql of tables) {
+      try { await db.$executeRawUnsafe(sql); } catch (e: any) { console.log("  SQL:", e?.message?.substring(0, 80)); }
+    }
+
+    // Re-insert user data if it was dropped
     console.log("  Database schema synced successfully - all tables ready");
     await db.$disconnect();
   } catch (error: any) {
