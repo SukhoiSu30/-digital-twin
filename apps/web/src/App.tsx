@@ -10,8 +10,8 @@ import { AuthCallback } from "@/pages/AuthCallback";
 
 function App() {
   const [darkMode, setDarkMode] = useState(() => {
-    // Check system preference on first load
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    // Default to dark mode; user can toggle to light
+    return true;
   });
 
   useEffect(() => {
