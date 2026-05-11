@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,55 +12,7 @@ import {
   ChevronRight,
   Filter,
 } from "lucide-react";
-
-// Demo data — replaced by API calls once authenticated
-const DEMO_MEETINGS = [
-  {
-    id: "1",
-    title: "Sprint Planning — Q3 Roadmap",
-    startTime: new Date(Date.now() + 30 * 60000).toISOString(),
-    endTime: new Date(Date.now() + 90 * 60000).toISOString(),
-    status: "SCHEDULED",
-    zoomJoinUrl: "https://zoom.us/j/1234567890",
-    actionItemCount: 0,
-  },
-  {
-    id: "2",
-    title: "Client Sync — Digital Twin Demo",
-    startTime: new Date(Date.now() + 120 * 60000).toISOString(),
-    endTime: new Date(Date.now() + 150 * 60000).toISOString(),
-    status: "DISCOVERED",
-    zoomJoinUrl: "https://zoom.us/j/9876543210",
-    actionItemCount: 0,
-  },
-  {
-    id: "3",
-    title: "Engineering Stand-up",
-    startTime: new Date(Date.now() - 60 * 60000).toISOString(),
-    endTime: new Date(Date.now() - 30 * 60000).toISOString(),
-    status: "COMPLETED",
-    zoomJoinUrl: "https://zoom.us/j/5555555555",
-    actionItemCount: 3,
-  },
-  {
-    id: "4",
-    title: "Design Review — Dashboard UI",
-    startTime: new Date(Date.now() - 180 * 60000).toISOString(),
-    endTime: new Date(Date.now() - 120 * 60000).toISOString(),
-    status: "COMPLETED",
-    zoomJoinUrl: "https://zoom.us/j/4444444444",
-    actionItemCount: 5,
-  },
-  {
-    id: "5",
-    title: "Weekly All-Hands",
-    startTime: new Date(Date.now() + 240 * 60000).toISOString(),
-    endTime: new Date(Date.now() + 300 * 60000).toISOString(),
-    status: "DISCOVERED",
-    zoomJoinUrl: "https://zoom.us/j/3333333333",
-    actionItemCount: 0,
-  },
-];
+import { api } from "@/lib/api";
 
 const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" | "success" | "warning" }> = {
   DISCOVERED: { label: "Discovered", variant: "secondary" },
@@ -75,12 +27,34 @@ const statusConfig: Record<string, { label: string; variant: "default" | "second
 
 export function MeetingsList() {
   const navigate = useNavigate();
+  const [meetings, setMeetings] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
+
+  const fetchMeetings = async () => {
+    try {
+      setLoading(true);
+      const params: Record<string, string> = {};
+      if (filter !== "all") params.status = filter;
+      const response = await api.getMeetings(params);
+      if (response.data && Array.isArray(response.data)) {
+        setMeetings(response.data as any[]);
+      }
+    } catch (error) {
+      console.error("Failed to fetch meetings:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMeetings();
+  }, [filter]);
 
   const filtered =
     filter === "all"
-      ? DEMO_MEETINGS
-      : DEMO_MEETINGS.filter((m) => m.status === filter);
+      ? meetings
+      : meetings.filter((m) => m.status === filter);
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -187,9 +161,13 @@ export function MeetingsList() {
         })}
       </div>
 
-      {filtered.length === 0 && (
+      {loading ? (
         <div className="text-center py-12 text-muted-foreground">
-          <p>No meetings found with this filter.</p>
+          <p>Loading meetings...</p>
+        </div>
+      ) : filtered.length === 0 && (
+        <div className="text-center py-12 text-muted-foreground">
+          <p>No meetings found. Sync your calendar to discover meetings.</p>
         </div>
       )}
     </div>

@@ -6,66 +6,20 @@ import { MeetingCard } from "@/components/dashboard/MeetingCard";
 import { RefreshCw, LogIn } from "lucide-react";
 import { api } from "@/lib/api";
 
-// Placeholder data — replaced by real API calls once authenticated
-const DEMO_MEETINGS = [
-  {
-    id: "1",
-    title: "Sprint Planning — Q3 Roadmap",
-    startTime: new Date(Date.now() + 30 * 60000).toISOString(),
-    endTime: new Date(Date.now() + 90 * 60000).toISOString(),
-    status: "DISCOVERED",
-    autoJoin: true,
-    zoomJoinUrl: "https://zoom.us/j/1234567890",
-    botSession: null,
-    summary: null,
-    actionItems: [],
-  },
-  {
-    id: "2",
-    title: "Client Sync — Digital Twin Demo",
-    startTime: new Date(Date.now() + 120 * 60000).toISOString(),
-    endTime: new Date(Date.now() + 150 * 60000).toISOString(),
-    status: "SCHEDULED",
-    autoJoin: true,
-    zoomJoinUrl: "https://zoom.us/j/9876543210",
-    botSession: null,
-    summary: null,
-    actionItems: [],
-  },
-  {
-    id: "3",
-    title: "Engineering Stand-up",
-    startTime: new Date(Date.now() - 60 * 60000).toISOString(),
-    endTime: new Date(Date.now() - 30 * 60000).toISOString(),
-    status: "COMPLETED",
-    autoJoin: true,
-    zoomJoinUrl: "https://zoom.us/j/5555555555",
-    botSession: null,
-    summary: {
-      overview:
-        "Discussed progress on the digital twin project. Backend API routes are 80% complete. Frontend scaffold ready for review.",
-    },
-    actionItems: [
-      { id: "a1", title: "Finalize Zoom SDK integration", status: "pending" },
-      { id: "a2", title: "Set up Deepgram streaming", status: "pending" },
-    ],
-  },
-];
-
 export function Dashboard() {
   const navigate = useNavigate();
-  const [meetings, setMeetings] = useState(DEMO_MEETINGS);
+  const [meetings, setMeetings] = useState<any[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [isAuthenticated] = useState(() => !!api.getToken());
 
   const fetchMeetings = async () => {
     try {
       const response = await api.getMeetings();
-      if (response.data && Array.isArray(response.data) && (response.data as any[]).length > 0) {
+      if (response.data && Array.isArray(response.data)) {
         setMeetings(response.data as any[]);
       }
     } catch (error) {
-      console.log("Using demo data");
+      console.error("Failed to fetch meetings:", error);
     }
   };
 
