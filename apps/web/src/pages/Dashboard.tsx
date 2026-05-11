@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { StatsBar } from "@/components/dashboard/StatsBar";
@@ -58,13 +58,34 @@ export function Dashboard() {
   const [syncing, setSyncing] = useState(false);
   const [isAuthenticated] = useState(() => !!api.getToken());
 
+  const fetchMeetings = async () => {
+    try {
+      const response = await api.getMeetings();
+      if (response.data && Array.isArray(response.data) && (response.data as any[]).length > 0) {
+        setMeetings(response.data as any[]);
+      }
+    } catch (error) {
+      console.log("Using demo data");
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchMeetings();
+    }
+  }, [isAuthenticated]);
+
   const handleSync = async () => {
     setSyncing(true);
     try {
       await api.syncCalendar();
+      // Wait a moment for sync to complete, then fetch meetings
+      setTimeout(async () => {
+        await fetchMeetings();
+        setSyncing(false);
+      }, 3000);
     } catch (error) {
       console.error("Sync failed:", error);
-    } finally {
       setSyncing(false);
     }
   };
