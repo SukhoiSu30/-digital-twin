@@ -10,8 +10,9 @@ router.use(authMiddleware);
 // Utility: Extract Zoom link from text
 function extractZoomLink(text: string): string | null {
   const patterns = [
-    /https:\/\/[\w.-]*zoom\.us\/j\/(\d+)(\?pwd=[\w%-]+)?/gi,
+    /https:\/\/[\w.-]*zoom\.us\/j\/(\d+)(\?pwd=[\w%.=-]+)?/gi,
     /https:\/\/[\w.-]*zoom\.us\/my\/[\w.-]+/gi,
+    /https:\/\/[\w.-]*zoom\.us\/w\/(\d+)(\?pwd=[\w%.=-]+)?/gi,
   ];
 
   for (const pattern of patterns) {
@@ -119,15 +120,19 @@ router.post("/sync", async (req: Request, res: Response) => {
     let discovered = 0;
     let updated = 0;
 
+    console.log(`[Calendar Sync] Found ${events.length} calendar events`);
+
     for (const event of events) {
       // Look for Zoom links in body, location, and onlineMeeting
-      const searchText = [
-        event.body?.content || "",
-        typeof event.location === "string" ? event.location : event.location?.displayName || "",
-        event.onlineMeeting?.joinUrl || "",
-      ].join(" ");
+      const bodyContent = event.body?.content || "";
+      const locationText = typeof event.location === "string" ? event.location : event.location?.displayName || "";
+      const onlineMeetingUrl = event.onlineMeeting?.joinUrl || "";
+      const searchText = [bodyContent, locationText, onlineMeetingUrl].join(" ");
+
+      console.log(`[Calendar Sync] Event: "${event.subject}" | Location: "${locationText}" | Online: "${onlineMeetingUrl}" | Body length: ${bodyContent.length}`);
 
       const zoomLink = extractZoomLink(searchText);
+      console.log(`[Calendar Sync] Zoom link found: ${zoomLink || "NONE"}`);
 
       if (zoomLink) {
         const { meetingId, passcode } = parseZoomUrl(zoomLink);
