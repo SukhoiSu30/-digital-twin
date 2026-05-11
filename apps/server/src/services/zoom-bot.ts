@@ -113,23 +113,32 @@ async function joinInBackground(
   const { dbMeetingId, zoomMeetingId, zoomJoinUrl, zoomPasscode } = params;
 
   try {
-    // Dynamic import puppeteer
-    const puppeteer = require("puppeteer");
+    // Dynamic import puppeteer-core
+    const puppeteer = require("puppeteer-core");
 
     console.log(`[ZoomBot] Launching browser for meeting ${zoomMeetingId}...`);
 
+    // Find Chrome/Chromium on the system
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
+      || "/usr/bin/google-chrome-stable"
+      || "/usr/bin/chromium-browser"
+      || "/usr/bin/chromium";
+
     const browser = await puppeteer.launch({
       headless: "new",
+      executablePath,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
         "--disable-accelerated-2d-canvas",
         "--disable-gpu",
-        "--use-fake-ui-for-media-stream",        // Auto-allow mic/camera prompts
-        "--use-fake-device-for-media-stream",     // Use fake audio device
+        "--use-fake-ui-for-media-stream",
+        "--use-fake-device-for-media-stream",
         "--autoplay-policy=no-user-gesture-required",
         "--disable-web-security",
+        "--single-process",
+        "--no-zygote",
         "--window-size=1280,720",
       ],
     });

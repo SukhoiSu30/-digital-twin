@@ -23,21 +23,29 @@ router.post("/join/:meetingId", async (req: Request, res: Response) => {
       return;
     }
 
-    // Import and trigger the Puppeteer-based bot
-    const { joinMeeting } = require("../services/zoom-bot");
+    // Create bot session record
+    const botSession = await prisma.botSession.upsert({
+      where: { meetingId: meeting.id },
+      create: {
+        meetingId: meeting.id,
+        status: "connecting",
+      },
+      update: {
+        status: "connecting",
+        errorLog: null,
+      },
+    });
 
-    const session = await joinMeeting({
-      dbMeetingId: meeting.id,
-      zoomMeetingId: meeting.zoomMeetingId || "",
-      zoomJoinUrl: meeting.zoomJoinUrl,
-      zoomPasscode: meeting.zoomPasscode,
-      botName: "Digital Twin - Vaibhav Mujage",
+    // Update meeting status
+    await prisma.meeting.update({
+      where: { id: meeting.id },
+      data: { status: "JOINING" },
     });
 
     res.json({
       success: true,
-      data: { status: session.status, meetingId: meeting.id },
-      message: "Bot join initiated — waiting for host to admit",
+      data: botSession,
+      message: "Bot join initiated",
     });
   } catch (error) {
     console.error("Error joining meeting:", error);
@@ -66,9 +74,17 @@ router.post("/leave/:meetingId", async (req: Request, res: Response) => {
       return;
     }
 
-    // Use Puppeteer bot to leave
-    const { leaveMeeting } = require("../services/zoom-bot");
-    await leaveMeeting(meeting.id);
+    // Update bot session
+    await prisma.botSession.update({
+      where: { id: botSession.id },
+      data: { status: "disconnected", leftAt: new Date() },
+    });
+
+    // Update meeting status to processing
+    await prisma.meeting.update({
+      where: { id: meeting.id },
+      data: { status: "PROCESSING" },
+    });
 
     res.json({ success: true, message: "Bot leaving meeting" });
   } catch (error) {
