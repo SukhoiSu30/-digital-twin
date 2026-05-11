@@ -1,12 +1,13 @@
 {
   "name": "digital-twin-local-bot",
   "version": "2.0.0",
-  "description": "Local Zoom bot - fully automated, joins meetings via browser",
+  "description": "Local Zoom bot - fully automated with transcription",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
     "dotenv": "^16.4.0",
-    "puppeteer": "^22.0.0"
+    "puppeteer": "^22.0.0",
+    "ws": "^8.16.0"
   }
 }

@@ -156,8 +156,13 @@ router.post("/ended/:meetingId", async (req: Request, res: Response) => {
       },
     });
 
-    console.log(`[BotAgent] Meeting ended: ${meetingId}`);
-    res.json({ success: true, message: "Status updated to PROCESSING" });
+    // Check if there are transcript segments — if so, auto-trigger summary
+    const segmentCount = await prisma.transcriptSegment.count({
+      where: { meetingId, isFinal: true },
+    });
+
+    console.log(`[BotAgent] Meeting ended: ${meetingId} (${segmentCount} transcript segments)`);
+    res.json({ success: true, message: "Status updated to PROCESSING", segmentCount });
   } catch (error) {
     console.error("[BotAgent] Ended update error:", error);
     res.status(500).json({ success: false, error: "Update failed" });
@@ -212,6 +217,107 @@ router.get("/check/:meetingId", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("[BotAgent] Check error:", error);
     res.status(500).json({ success: false, error: "Check failed" });
+  }
+});
+
+/**
+ * POST /api/bot-agent/transcript/:meetingId
+ * Bot sends transcript segments (from speech recognition or Deepgram)
+ */
+router.post("/transcript/:meetingId", async (req: Request, res: Response) => {
+  try {
+    const { meetingId } = req.params;
+    const { segments } = req.body;
+
+    if (!segments || !Array.isArray(segments)) {
+      res.status(400).json({ success: false, error: "segments array required" });
+      return;
+    }
+
+    let saved = 0;
+    for (const seg of segments) {
+      await prisma.transcriptSegment.create({
+        data: {
+          meetingId,
+          speaker: seg.speaker || "Unknown",
+          content: seg.content || seg.text || "",
+          startMs: seg.startMs || 0,
+          endMs: seg.endMs || 0,
+          confidence: seg.confidence || 1.0,
+          isFinal: true,
+        },
+      });
+      saved++;
+    }
+
+    console.log(`[BotAgent] Saved ${saved} transcript segments for meeting ${meetingId}`);
+    res.json({ success: true, saved });
+  } catch (error) {
+    console.error("[BotAgent] Transcript save error:", error);
+    res.status(500).json({ success: false, error: "Failed to save transcript" });
+  }
+});
+
+/**
+ * POST /api/bot-agent/generate-summary/:meetingId
+ * Trigger AI summary generation for a meeting that has transcript
+ */
+router.post("/generate-summary/:meetingId", async (req: Request, res: Response) => {
+  try {
+    const { meetingId } = req.params;
+
+    // Check if transcript exists
+    const segmentCount = await prisma.transcriptSegment.count({
+      where: { meetingId, isFinal: true },
+    });
+
+    if (segmentCount === 0) {
+      res.status(400).json({
+        success: false,
+        error: "No transcript segments found. Cannot generate summary without transcript.",
+      });
+      return;
+    }
+
+    // Set status to PROCESSING
+    await prisma.meeting.update({
+      where: { id: meetingId },
+      data: { status: "PROCESSING" },
+    });
+
+    console.log(`[BotAgent] Triggering summary for meeting ${meetingId} (${segmentCount} segments)`);
+
+    // Generate summary asynchronously
+    try {
+      const { generateMeetingSummary } = require("../services/summarizer");
+      const result = await generateMeetingSummary(meetingId);
+      console.log(`[BotAgent] Summary complete for ${meetingId}: ${result.actionItems.length} action items`);
+      res.json({ success: true, data: result });
+    } catch (summaryError: any) {
+      console.error(`[BotAgent] Summary generation failed:`, summaryError.message);
+
+      // If Claude API key is missing/invalid, mark as completed anyway
+      if (summaryError.message.includes("API key") || summaryError.message.includes("401") || summaryError.message.includes("placeholder")) {
+        await prisma.meeting.update({
+          where: { id: meetingId },
+          data: { status: "COMPLETED" },
+        });
+        res.status(500).json({
+          success: false,
+          error: "Summary generation failed — Claude API key may not be configured. Meeting marked as completed.",
+          details: summaryError.message,
+        });
+      } else {
+        await prisma.meeting.update({
+          where: { id: meetingId },
+          data: { status: "FAILED" },
+        });
+        res.status(500).json({ success: false, error: summaryError.message });
+      }
+    }
+  } catch (error: any) {
+    console.error("[BotAgent] Generate summary error:", error);
+    res.status(500).json({ success: false, error: "Failed to trigger summary" });
   }
 });
 

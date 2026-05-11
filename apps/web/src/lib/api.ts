@@ -88,6 +88,13 @@ class ApiClient {
     return this.request(`/meetings/${meetingId}/cancel-bot`, { method: "POST" });
   }
 
+  forceEndMeeting(meetingId: string) {
+    return this.request(`/meetings/${meetingId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "COMPLETED" }),
+    });
+  }
+
   getBotStatus() {
     return this.request("/bot/status");
   }

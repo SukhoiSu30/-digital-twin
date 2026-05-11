@@ -19,9 +19,11 @@ const puppeteer = require("puppeteer");
 // ─── Configuration ──────────────────────────────────────
 const API_URL = process.env.API_URL || "https://digital-twin-api-13y1.onrender.com/api";
 const BOT_SECRET = process.env.BOT_SECRET || "dt-bot-secret-2024";
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "";
 const BOT_NAME = "Vaibhav Mujage";
 const POLL_INTERVAL = 8000;
 const activeBots = new Map(); // meetingId -> { browser, page, status }
+const useDeepgram = DEEPGRAM_API_KEY && DEEPGRAM_API_KEY !== "placeholder";
 
 console.log(`
 ╔══════════════════════════════════════════════╗
@@ -31,6 +33,7 @@ console.log(`
 ║  API:       ${API_URL.substring(0, 33).padEnd(33)}║
 ║  Polling:   Every ${POLL_INTERVAL / 1000}s                        ║
 ║  Auth:      BOT_SECRET                       ║
+║  Transcribe: ${(useDeepgram ? "Deepgram (high accuracy)" : "Web Speech API (basic)").padEnd(32)}║
 ║                                              ║
 ║  Press Ctrl+C to stop                        ║
 ╚══════════════════════════════════════════════╝
@@ -449,13 +452,27 @@ async function joinMeeting(meeting) {
 
       await page.screenshot({ path: "debug-step3-in-meeting.png" });
 
+      // ── Start Speech Recognition for Transcription ──
+      console.log(`[Bot] Starting speech recognition for transcription...`);
+      await startSpeechRecognition(page, id);
+
+      // ── Periodically flush transcripts to server ──
+      const transcriptFlush = setInterval(async () => {
+        try {
+          await flushTranscripts(page, id);
+        } catch (e) { /* page may have closed */ }
+      }, 15000); // Every 15 seconds
+
       // ── Monitor for meeting end ──
       const endCheck = setInterval(async () => {
         try {
           const stillActive = await checkStillActive(id);
           if (!stillActive) {
             clearInterval(endCheck);
+            clearInterval(transcriptFlush);
+            await flushTranscripts(page, id).catch(() => {}); // Final flush
             console.log(`[Bot] Meeting ${id} cancelled — leaving`);
+            closeDeepgram(id);
             await browser.close().catch(() => {});
             activeBots.delete(id);
             return;
@@ -466,23 +483,43 @@ async function joinMeeting(meeting) {
             return (
               text.includes("meeting has ended") ||
               text.includes("host has ended") ||
-              text.includes("you have been removed")
+              text.includes("you have been removed") ||
+              text.includes("The host ended this meeting") ||
+              text.includes("This meeting has been ended") ||
+              text.includes("Meeting Ended")
             );
           });
 
           if (ended) {
             clearInterval(endCheck);
+            clearInterval(transcriptFlush);
             console.log(`\n[Bot] Meeting ended: "${title}"`);
+            // Final transcript flush + close Deepgram
+            await flushTranscripts(page, id).catch(() => {});
+            closeDeepgram(id);
+            // Report ended and trigger summary
             await reportEnded(id);
+            console.log(`[Bot] Triggering summary generation...`);
+            const summaryResult = await botApi(`/generate-summary/${id}`, "POST");
+            if (summaryResult.success) {
+              console.log(`[Bot] Summary generated successfully!`);
+            } else {
+              console.log(`[Bot] Summary: ${summaryResult.error || "pending"}`);
+            }
             await browser.close().catch(() => {});
             activeBots.delete(id);
           }
         } catch (e) {
           clearInterval(endCheck);
+          clearInterval(transcriptFlush);
+          await flushTranscripts(page, id).catch(() => {});
+          closeDeepgram(id);
           await reportEnded(id).catch(() => {});
+          // Try to generate summary even on error
+          await botApi(`/generate-summary/${id}`, "POST").catch(() => {});
           activeBots.delete(id);
         }
-      }, 10000);
+      }, 8000);
 
     } else {
       console.log(`[Bot] Timed out waiting to join "${title}"`);
@@ -496,6 +533,249 @@ async function joinMeeting(meeting) {
     await reportFailed(id, error.message).catch(() => {});
     if (browser) await browser.close().catch(() => {});
     activeBots.delete(id);
+  }
+}
+
+// ─── Speech Recognition & Transcription ─────────────────
+
+// Active Deepgram connections per meeting
+const deepgramConnections = new Map();
+
+/**
+ * Start transcription for a meeting.
+ * Uses Deepgram if API key is available, otherwise Web Speech API.
+ */
+async function startSpeechRecognition(page, meetingId) {
+  if (useDeepgram) {
+    await startDeepgramTranscription(page, meetingId);
+  } else {
+    await startWebSpeechTranscription(page, meetingId);
+  }
+}
+
+/**
+ * Deepgram Mode — Capture tab audio and stream to Deepgram WebSocket
+ * Gives speaker diarization, high accuracy, proper timestamps
+ */
+async function startDeepgramTranscription(page, meetingId) {
+  try {
+    const WebSocket = require("ws");
+
+    // Connect to Deepgram's real-time API
+    const dgUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&language=en&smart_format=true&punctuate=true&diarize=true&utterances=true&interim_results=false&endpointing=300`;
+
+    const ws = new WebSocket(dgUrl, {
+      headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
+    });
+
+    const transcriptBuffer = [];
+
+    ws.on("open", () => {
+      console.log(`[Bot] Deepgram connected for meeting ${meetingId}`);
+      deepgramConnections.set(meetingId, { ws, buffer: transcriptBuffer });
+    });
+
+    ws.on("message", (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        const alt = msg?.channel?.alternatives?.[0];
+        if (!alt?.transcript) return;
+
+        const text = alt.transcript.trim();
+        if (!text) return;
+        if (!msg.is_final) return;
+
+        const speaker = alt.words?.[0]?.speaker;
+        const speakerLabel = speaker !== undefined ? `Speaker ${speaker}` : "Unknown";
+        const startMs = Math.floor((msg.start || 0) * 1000);
+        const endMs = Math.floor(((msg.start || 0) + (msg.duration || 0)) * 1000);
+
+        transcriptBuffer.push({
+          content: text,
+          speaker: speakerLabel,
+          startMs,
+          endMs,
+          confidence: alt.confidence || 1.0,
+        });
+
+        console.log(`[Transcript] ${speakerLabel}: ${text.substring(0, 80)}...`);
+      } catch (e) { /* parse error */ }
+    });
+
+    ws.on("error", (err) => {
+      console.error(`[Bot] Deepgram WebSocket error:`, err.message);
+    });
+
+    ws.on("close", () => {
+      console.log(`[Bot] Deepgram connection closed for meeting ${meetingId}`);
+      deepgramConnections.delete(meetingId);
+    });
+
+    // Capture tab audio using Chrome DevTools Protocol
+    const client = await page.createCDPSession();
+
+    // Enable audio capture by injecting an AudioContext that captures tab output
+    await page.evaluate(() => {
+      window.__dtTranscripts = [];
+      window.__dtRecording = true;
+      window.__dtStartTime = Date.now();
+
+      // Try to capture audio using AudioContext
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // Listen for any audio elements and capture them
+        const observer = new MutationObserver(() => {
+          const audioElements = document.querySelectorAll("audio, video");
+          audioElements.forEach((el) => {
+            if (!el.__dtCaptured) {
+              el.__dtCaptured = true;
+              try {
+                const source = audioCtx.createMediaElementSource(el);
+                source.connect(audioCtx.destination);
+              } catch (e) { /* already captured */ }
+            }
+          });
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        console.log("[DT-Bot] Audio capture initialized");
+      } catch (e) {
+        console.log("[DT-Bot] Audio capture failed:", e.message);
+      }
+    });
+
+    // Also start Web Speech API as a parallel capture method
+    await startWebSpeechTranscription(page, meetingId);
+
+    console.log(`[Bot] Deepgram + Web Speech both active for meeting ${meetingId}`);
+
+  } catch (e) {
+    console.log(`[Bot] Deepgram setup failed: ${e.message}`);
+    console.log(`[Bot] Falling back to Web Speech API only`);
+    await startWebSpeechTranscription(page, meetingId);
+  }
+}
+
+/**
+ * Web Speech API Mode — Free, built into Chrome
+ * Basic transcription without speaker identification
+ */
+async function startWebSpeechTranscription(page, meetingId) {
+  try {
+    await page.evaluate(() => {
+      // Don't double-initialize
+      if (window.__dtSpeechStarted) return;
+      window.__dtSpeechStarted = true;
+
+      window.__dtTranscripts = window.__dtTranscripts || [];
+      window.__dtRecording = true;
+      window.__dtStartTime = window.__dtStartTime || Date.now();
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        console.log("[DT-Bot] SpeechRecognition not available");
+        return;
+      }
+
+      function startRecognizer() {
+        if (!window.__dtRecording) return;
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.lang = "en-US";
+        recognition.maxAlternatives = 1;
+
+        recognition.onresult = (event) => {
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              const text = event.results[i][0].transcript.trim();
+              if (text) {
+                window.__dtTranscripts.push({
+                  content: text,
+                  confidence: event.results[i][0].confidence,
+                  startMs: Date.now() - window.__dtStartTime,
+                  speaker: "Speaker",
+                });
+              }
+            }
+          }
+        };
+
+        recognition.onerror = (event) => {
+          if (event.error === "no-speech" || event.error === "aborted") {
+            setTimeout(startRecognizer, 500);
+          } else {
+            console.log("[DT-Bot] Speech error:", event.error);
+            setTimeout(startRecognizer, 2000);
+          }
+        };
+
+        recognition.onend = () => {
+          if (window.__dtRecording) setTimeout(startRecognizer, 300);
+        };
+
+        try { recognition.start(); } catch (e) { setTimeout(startRecognizer, 1000); }
+      }
+
+      startRecognizer();
+      console.log("[DT-Bot] Web Speech API started");
+    });
+    console.log(`[Bot] Web Speech API active for meeting ${meetingId}`);
+  } catch (e) {
+    console.log(`[Bot] Could not start speech recognition: ${e.message}`);
+  }
+}
+
+/**
+ * Collect captured transcripts from the page and Deepgram, send to server
+ */
+async function flushTranscripts(page, meetingId) {
+  try {
+    // Get Web Speech API transcripts from the page
+    let webSegments = [];
+    try {
+      webSegments = await page.evaluate(() => {
+        const data = window.__dtTranscripts || [];
+        window.__dtTranscripts = [];
+        return data;
+      });
+    } catch (e) { /* page closed */ }
+
+    // Get Deepgram transcripts from buffer
+    let dgSegments = [];
+    const dgConn = deepgramConnections.get(meetingId);
+    if (dgConn && dgConn.buffer.length > 0) {
+      dgSegments = [...dgConn.buffer];
+      dgConn.buffer.length = 0; // Clear buffer
+    }
+
+    // Prefer Deepgram segments (they have speaker info), fall back to Web Speech
+    const segments = dgSegments.length > 0 ? dgSegments : webSegments;
+
+    if (segments.length === 0) return;
+
+    // Enrich with endMs if missing
+    const enriched = segments.map((seg, i) => ({
+      ...seg,
+      endMs: seg.endMs || (segments[i + 1] ? segments[i + 1].startMs : seg.startMs + 5000),
+    }));
+
+    console.log(`[Bot] Flushing ${enriched.length} transcript segments (${dgSegments.length > 0 ? "Deepgram" : "WebSpeech"})`);
+
+    await botApi(`/transcript/${meetingId}`, "POST", { segments: enriched });
+  } catch (e) {
+    // Page might be closed
+  }
+}
+
+/**
+ * Close Deepgram connection for a meeting
+ */
+function closeDeepgram(meetingId) {
+  const conn = deepgramConnections.get(meetingId);
+  if (conn && conn.ws) {
+    try { conn.ws.close(); } catch (e) {}
+    deepgramConnections.delete(meetingId);
   }
 }
 

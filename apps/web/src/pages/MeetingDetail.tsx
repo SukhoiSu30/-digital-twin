@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LiveTranscript } from "@/components/meetings/LiveTranscript";
 import { SummaryPanel } from "@/components/meetings/SummaryPanel";
-import { ArrowLeft, Bot, Calendar, Clock, Video, RefreshCw, XCircle } from "lucide-react";
+import { ArrowLeft, Bot, Calendar, Clock, Video, RefreshCw, XCircle, StopCircle } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface MeetingData {
@@ -116,6 +116,16 @@ export function MeetingDetail() {
     }
   };
 
+  const handleForceEnd = async () => {
+    if (!id) return;
+    try {
+      await api.forceEndMeeting(id);
+      fetchMeeting();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
   const handleToggleAction = async (actionId: string, status: string) => {
     try {
       await api.updateAction(actionId, { status });
@@ -198,6 +208,12 @@ export function MeetingDetail() {
             {isLive && (
               <Button size="sm" variant="destructive" onClick={handleLeaveBot}>
                 End & Generate Summary
+              </Button>
+            )}
+            {["IN_PROGRESS", "PROCESSING", "JOINING"].includes(meeting.status) && (
+              <Button size="sm" variant="outline" onClick={handleForceEnd}>
+                <StopCircle className="h-4 w-4 mr-1" />
+                Force End
               </Button>
             )}
             <Button size="sm" variant="outline" onClick={fetchMeeting}>
