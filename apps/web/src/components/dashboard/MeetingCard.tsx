@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Calendar, Clock, Video, Bot, FileText, XCircle } from "lucide-react";
+import { Calendar, Clock, Video, Bot, FileText, XCircle, Trash2 } from "lucide-react";
 
 interface Meeting {
   id: string;
@@ -21,6 +21,7 @@ interface MeetingCardProps {
   onJoin?: (id: string) => void;
   onLeave?: (id: string) => void;
   onCancel?: (id: string) => void;
+  onDelete?: (id: string) => void;
   onToggleAutoJoin?: (id: string, autoJoin: boolean) => void;
   onViewDetails?: (id: string) => void;
 }
@@ -36,7 +37,7 @@ const statusConfig: Record<string, { label: string; variant: "default" | "second
   SKIPPED: { label: "Skipped", variant: "outline" },
 };
 
-export function MeetingCard({ meeting, onJoin, onLeave, onCancel, onViewDetails }: MeetingCardProps) {
+export function MeetingCard({ meeting, onJoin, onLeave, onCancel, onDelete, onViewDetails }: MeetingCardProps) {
   const start = new Date(meeting.startTime);
   const end = new Date(meeting.endTime);
   const now = new Date();
@@ -120,6 +121,11 @@ export function MeetingCard({ meeting, onJoin, onLeave, onCancel, onViewDetails 
             {onViewDetails && (
               <Button size="sm" variant="outline" onClick={() => onViewDetails(meeting.id)}>
                 View Details
+              </Button>
+            )}
+            {onDelete && !["JOINING", "IN_PROGRESS"].includes(meeting.status) && (
+              <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive" onClick={() => { if (confirm("Remove this meeting from the dashboard?")) onDelete(meeting.id); }}>
+                <Trash2 className="h-4 w-4" />
               </Button>
             )}
           </div>

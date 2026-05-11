@@ -95,6 +95,10 @@ class ApiClient {
     });
   }
 
+  deleteMeeting(meetingId: string) {
+    return this.request(`/meetings/${meetingId}`, { method: "DELETE" });
+  }
+
   getBotStatus() {
     return this.request("/bot/status");
   }

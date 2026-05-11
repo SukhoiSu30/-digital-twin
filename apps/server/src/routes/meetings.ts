@@ -11,8 +11,31 @@ router.use(authMiddleware);
 router.get("/", async (req: Request, res: Response) => {
   try {
     const { status, date, limit = "50", offset = "0" } = req.query;
+    const userId = req.user!.userId;
+    const now = new Date();
 
-    const where: any = { userId: req.user!.userId };
+    // ── Auto-cleanup: remove stale meetings on every fetch ──
+    // 1. Delete DISCOVERED/SCHEDULED meetings whose endTime has passed (expired, never used)
+    await prisma.meeting.deleteMany({
+      where: {
+        userId,
+        status: { in: ["DISCOVERED", "SCHEDULED"] },
+        endTime: { lt: now },
+      },
+    });
+
+    // 2. Delete FAILED/SKIPPED meetings older than 24 hours
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    await prisma.meeting.deleteMany({
+      where: {
+        userId,
+        status: { in: ["FAILED", "SKIPPED"] },
+        endTime: { lt: yesterday },
+      },
+    });
+
+    // ── Build query ──
+    const where: any = { userId };
 
     if (status && typeof status === "string") {
       where.status = status;
@@ -28,7 +51,7 @@ router.get("/", async (req: Request, res: Response) => {
     const [meetings, total] = await Promise.all([
       prisma.meeting.findMany({
         where,
-        orderBy: { startTime: "asc" },
+        orderBy: { startTime: "desc" },
         take: parseInt(limit as string),
         skip: parseInt(offset as string),
         include: {

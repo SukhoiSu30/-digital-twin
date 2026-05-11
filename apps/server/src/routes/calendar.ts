@@ -89,18 +89,18 @@ router.post("/sync", async (req: Request, res: Response) => {
     const userId = req.user!.userId;
     const accessToken = await getValidAccessToken(userId);
 
-    // Get events for next 24 hours
+    // Get events for next 7 days (today + upcoming week)
     const now = new Date();
-    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     const graphResponse = await fetch(
       `https://graph.microsoft.com/v1.0/me/calendarView?` +
         new URLSearchParams({
           startDateTime: now.toISOString(),
-          endDateTime: tomorrow.toISOString(),
+          endDateTime: nextWeek.toISOString(),
           $select: "id,subject,body,start,end,location,onlineMeeting,organizer",
           $orderby: "start/dateTime",
-          $top: "50",
+          $top: "100",
         }),
       {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -169,6 +169,31 @@ router.post("/sync", async (req: Request, res: Response) => {
       }
     }
 
+    // Clean up meetings that were deleted from Outlook
+    // Get all external IDs from the calendar response
+    const calendarExternalIds = new Set(events.map((e: any) => e.id));
+
+    // Find meetings in DB that were synced from Outlook (have externalId)
+    // but are no longer in the calendar, and haven't been processed yet
+    const orphanedMeetings = await prisma.meeting.findMany({
+      where: {
+        userId,
+        externalId: { not: null },
+        status: { in: ["DISCOVERED", "SCHEDULED"] }, // Only remove unprocessed meetings
+        startTime: { gte: now, lte: nextWeek }, // Only in the sync window
+      },
+      select: { id: true, externalId: true, title: true },
+    });
+
+    let removed = 0;
+    for (const meeting of orphanedMeetings) {
+      if (meeting.externalId && !calendarExternalIds.has(meeting.externalId)) {
+        await prisma.meeting.delete({ where: { id: meeting.id } });
+        console.log(`[Calendar Sync] Removed deleted meeting: "${meeting.title}"`);
+        removed++;
+      }
+    }
+
     // Also scan recent emails for Zoom links (last 24 hours)
     const emailResponse = await fetch(
       `https://graph.microsoft.com/v1.0/me/messages?` +
@@ -205,6 +230,7 @@ router.post("/sync", async (req: Request, res: Response) => {
         calendarEventsScanned: events.length,
         meetingsDiscovered: discovered,
         meetingsUpdated: updated,
+        meetingsRemoved: removed,
         emailsScanned: 20,
         zoomLinksInEmails: emailMeetings,
       },
