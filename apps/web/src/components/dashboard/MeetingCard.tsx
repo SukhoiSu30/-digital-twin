@@ -73,10 +73,10 @@ export function MeetingCard({ meeting, onJoin, onLeave, onViewDetails }: Meeting
 
           {/* Zoom link indicator */}
           {meeting.zoomJoinUrl && (
-            <div className="flex items-center gap-1 text-sm text-blue-600">
+            <a href={meeting.zoomJoinUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-sm text-blue-600 hover:underline">
               <Video className="h-4 w-4" />
-              <span>Zoom meeting linked</span>
-            </div>
+              <span>Join Zoom Meeting</span>
+            </a>
           )}
 
           {/* Summary preview if completed */}

@@ -164,10 +164,10 @@ export function MeetingDetail() {
             </span>
             <span>({durationMin} min)</span>
             {meeting.zoomJoinUrl && (
-              <span className="flex items-center gap-1 text-blue-600">
+              <a href={meeting.zoomJoinUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-blue-600 hover:underline">
                 <Video className="h-4 w-4" />
-                Zoom
-              </span>
+                Join Zoom Meeting
+              </a>
             )}
           </div>
 
