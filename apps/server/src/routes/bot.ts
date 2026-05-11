@@ -23,32 +23,21 @@ router.post("/join/:meetingId", async (req: Request, res: Response) => {
       return;
     }
 
-    // Create bot session record
-    const botSession = await prisma.botSession.upsert({
-      where: { meetingId: meeting.id },
-      create: {
-        meetingId: meeting.id,
-        status: "connecting",
-      },
-      update: {
-        status: "connecting",
-        errorLog: null,
-      },
-    });
+    // Import and trigger the Puppeteer-based bot
+    const { joinMeeting } = require("../services/zoom-bot");
 
-    // Update meeting status
-    await prisma.meeting.update({
-      where: { id: meeting.id },
-      data: { status: "JOINING" },
+    const session = await joinMeeting({
+      dbMeetingId: meeting.id,
+      zoomMeetingId: meeting.zoomMeetingId || "",
+      zoomJoinUrl: meeting.zoomJoinUrl,
+      zoomPasscode: meeting.zoomPasscode,
+      botName: "Digital Twin - Pratik",
     });
-
-    // TODO: Trigger actual Zoom bot join via BullMQ job
-    // await botJoinQueue.add(`join-${meeting.id}`, { meetingId: meeting.id });
 
     res.json({
       success: true,
-      data: botSession,
-      message: "Bot join initiated",
+      data: { status: session.status, meetingId: meeting.id },
+      message: "Bot join initiated — waiting for host to admit",
     });
   } catch (error) {
     console.error("Error joining meeting:", error);
@@ -77,20 +66,9 @@ router.post("/leave/:meetingId", async (req: Request, res: Response) => {
       return;
     }
 
-    // Update bot session
-    await prisma.botSession.update({
-      where: { id: botSession.id },
-      data: { status: "disconnected", leftAt: new Date() },
-    });
-
-    // Update meeting status to processing
-    await prisma.meeting.update({
-      where: { id: meeting.id },
-      data: { status: "PROCESSING" },
-    });
-
-    // TODO: Trigger actual disconnect + summary generation
-    // await summaryQueue.add(`summary-${meeting.id}`, { meetingId: meeting.id });
+    // Use Puppeteer bot to leave
+    const { leaveMeeting } = require("../services/zoom-bot");
+    await leaveMeeting(meeting.id);
 
     res.json({ success: true, message: "Bot leaving meeting" });
   } catch (error) {
