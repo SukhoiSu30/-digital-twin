@@ -44,7 +44,7 @@ export async function joinMeeting(params: BotJoinParams): Promise<ZoomBotSession
     zoomMeetingId,
     zoomJoinUrl,
     zoomPasscode,
-    botName = "Digital Twin - Pratik"
+    botName = "Digital Twin - Vaibhav Mujage"
   } = params;
 
   if (activeBots.has(dbMeetingId)) {

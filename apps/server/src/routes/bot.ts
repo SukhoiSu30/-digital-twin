@@ -31,7 +31,7 @@ router.post("/join/:meetingId", async (req: Request, res: Response) => {
       zoomMeetingId: meeting.zoomMeetingId || "",
       zoomJoinUrl: meeting.zoomJoinUrl,
       zoomPasscode: meeting.zoomPasscode,
-      botName: "Digital Twin - Pratik",
+      botName: "Digital Twin - Vaibhav Mujage",
     });
 
     res.json({
