@@ -34,3 +34,7 @@ coverage/
 
 # Misc
 *.tsbuildinfo
+
+# Bot debug screenshots
+bot-local/debug-*.png
+bot-local/zoom-*.png

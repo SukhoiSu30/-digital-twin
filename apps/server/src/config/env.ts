@@ -40,6 +40,9 @@ const envSchema = z.object({
   // Auth
   JWT_SECRET: z.string().default("dev-jwt-secret-change-in-production"),
   SESSION_SECRET: z.string().default("dev-session-secret-change-in-production"),
+
+  // Bot Agent (local bot shared secret)
+  BOT_SECRET: z.string().default("dt-bot-secret-2024"),
 });
 
 export const env = envSchema.parse(process.env);

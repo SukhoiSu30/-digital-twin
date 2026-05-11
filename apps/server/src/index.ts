@@ -17,6 +17,7 @@ import botRoutes from "./routes/bot";
 import actionRoutes from "./routes/actions";
 import webhookRoutes from "./routes/webhooks";
 import summaryRoutes from "./routes/summaries";
+import botAgentRoutes from "./routes/bot-agent";
 
 const app = express();
 const httpServer = createServer(app);
@@ -60,6 +61,7 @@ app.use("/api/bot", botRoutes);
 app.use("/api/actions", actionRoutes);
 app.use("/api/summaries", summaryRoutes);
 app.use("/api/webhooks", webhookRoutes);
+app.use("/api/bot-agent", botAgentRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);
