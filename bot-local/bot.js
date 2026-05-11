@@ -23,8 +23,6 @@ const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "";
 const BOT_NAME = "Vaibhav Mujage";
 const POLL_INTERVAL = 8000;
 const activeBots = new Map(); // meetingId -> { browser, page, status }
-const useDeepgram = DEEPGRAM_API_KEY && DEEPGRAM_API_KEY !== "placeholder";
-
 console.log(`
 ╔══════════════════════════════════════════════╗
 ║      Digital Twin — Local Zoom Bot           ║
@@ -33,7 +31,7 @@ console.log(`
 ║  API:       ${API_URL.substring(0, 33).padEnd(33)}║
 ║  Polling:   Every ${POLL_INTERVAL / 1000}s                        ║
 ║  Auth:      BOT_SECRET                       ║
-║  Transcribe: ${(useDeepgram ? "Deepgram (high accuracy)" : "Web Speech API (basic)").padEnd(32)}║
+║  Transcribe: Zoom Live Captions (DOM scrape) ║
 ║                                              ║
 ║  Press Ctrl+C to stop                        ║
 ╚══════════════════════════════════════════════╝
@@ -536,221 +534,315 @@ async function joinMeeting(meeting) {
   }
 }
 
-// ─── Speech Recognition & Transcription ─────────────────
-
-// Active Deepgram connections per meeting
-const deepgramConnections = new Map();
+// ─── Transcription via Zoom's Live Captions ────────────────
+//
+// WHY: Web Speech API listens to the microphone, but Puppeteer uses
+//      a fake device (--use-fake-device-for-media-stream) so it hears
+//      almost nothing. Instead we enable Zoom's built-in Live Transcript
+//      and scrape the caption text from the DOM. Zoom does its own
+//      speech-to-text with speaker names — much more reliable.
 
 /**
  * Start transcription for a meeting.
- * Uses Deepgram if API key is available, otherwise Web Speech API.
+ * Enables Zoom's Live Transcript / CC button and scrapes captions.
  */
 async function startSpeechRecognition(page, meetingId) {
-  if (useDeepgram) {
-    await startDeepgramTranscription(page, meetingId);
-  } else {
-    await startWebSpeechTranscription(page, meetingId);
-  }
-}
+  console.log(`[Bot] Enabling Zoom Live Captions for transcription...`);
 
-/**
- * Deepgram Mode — Capture tab audio and stream to Deepgram WebSocket
- * Gives speaker diarization, high accuracy, proper timestamps
- */
-async function startDeepgramTranscription(page, meetingId) {
-  try {
-    const WebSocket = require("ws");
+  // Initialize transcript store on the page
+  await page.evaluate(() => {
+    window.__dtTranscripts = [];
+    window.__dtSeenCaptions = new Set();
+    window.__dtRecording = true;
+    window.__dtStartTime = Date.now();
+  });
 
-    // Connect to Deepgram's real-time API
-    const dgUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&language=en&smart_format=true&punctuate=true&diarize=true&utterances=true&interim_results=false&endpointing=300`;
+  // Try to click the "Live Transcript" / "CC" button to enable captions
+  await enableZoomCaptions(page);
 
-    const ws = new WebSocket(dgUrl, {
-      headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
-    });
+  // Start a MutationObserver on the page to capture caption elements in real time
+  await page.evaluate(() => {
+    if (window.__dtCaptionObserverStarted) return;
+    window.__dtCaptionObserverStarted = true;
 
-    const transcriptBuffer = [];
+    // Zoom renders captions in various containers. We scan for new text nodes
+    // in elements that match Zoom's caption patterns.
+    const captionSelectors = [
+      // Zoom Web Client caption containers (various versions)
+      '[class*="caption"]',
+      '[class*="subtitle"]',
+      '[class*="transcript"]',
+      '[class*="closed-caption"]',
+      '[class*="live-transcription"]',
+      '[id*="caption"]',
+      '[id*="transcript"]',
+      // Zoom's specific transcript panel elements
+      '.transcript-message',
+      '.caption-text',
+      '.live-transcript-content',
+    ];
 
-    ws.on("open", () => {
-      console.log(`[Bot] Deepgram connected for meeting ${meetingId}`);
-      deepgramConnections.set(meetingId, { ws, buffer: transcriptBuffer });
-    });
+    function scrapeCaptions() {
+      if (!window.__dtRecording) return;
 
-    ws.on("message", (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        const alt = msg?.channel?.alternatives?.[0];
-        if (!alt?.transcript) return;
-
-        const text = alt.transcript.trim();
-        if (!text) return;
-        if (!msg.is_final) return;
-
-        const speaker = alt.words?.[0]?.speaker;
-        const speakerLabel = speaker !== undefined ? `Speaker ${speaker}` : "Unknown";
-        const startMs = Math.floor((msg.start || 0) * 1000);
-        const endMs = Math.floor(((msg.start || 0) + (msg.duration || 0)) * 1000);
-
-        transcriptBuffer.push({
-          content: text,
-          speaker: speakerLabel,
-          startMs,
-          endMs,
-          confidence: alt.confidence || 1.0,
-        });
-
-        console.log(`[Transcript] ${speakerLabel}: ${text.substring(0, 80)}...`);
-      } catch (e) { /* parse error */ }
-    });
-
-    ws.on("error", (err) => {
-      console.error(`[Bot] Deepgram WebSocket error:`, err.message);
-    });
-
-    ws.on("close", () => {
-      console.log(`[Bot] Deepgram connection closed for meeting ${meetingId}`);
-      deepgramConnections.delete(meetingId);
-    });
-
-    // Capture tab audio using Chrome DevTools Protocol
-    const client = await page.createCDPSession();
-
-    // Enable audio capture by injecting an AudioContext that captures tab output
-    await page.evaluate(() => {
-      window.__dtTranscripts = [];
-      window.__dtRecording = true;
-      window.__dtStartTime = Date.now();
-
-      // Try to capture audio using AudioContext
-      try {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        // Listen for any audio elements and capture them
-        const observer = new MutationObserver(() => {
-          const audioElements = document.querySelectorAll("audio, video");
-          audioElements.forEach((el) => {
-            if (!el.__dtCaptured) {
-              el.__dtCaptured = true;
-              try {
-                const source = audioCtx.createMediaElementSource(el);
-                source.connect(audioCtx.destination);
-              } catch (e) { /* already captured */ }
+      // Method 1: Look for caption/subtitle elements by class
+      for (const sel of captionSelectors) {
+        const elements = document.querySelectorAll(sel);
+        elements.forEach((el) => {
+          // Get all text content spans inside caption containers
+          const textNodes = el.querySelectorAll("span, p, div");
+          if (textNodes.length === 0) {
+            // Check the element itself
+            const txt = (el.textContent || "").trim();
+            if (txt && txt.length > 1 && !window.__dtSeenCaptions.has(txt)) {
+              window.__dtSeenCaptions.add(txt);
+              window.__dtTranscripts.push({
+                content: txt,
+                speaker: "Speaker",
+                startMs: Date.now() - window.__dtStartTime,
+                confidence: 0.9,
+              });
             }
-          });
+          } else {
+            textNodes.forEach((node) => {
+              const txt = (node.textContent || "").trim();
+              if (txt && txt.length > 1 && !window.__dtSeenCaptions.has(txt)) {
+                window.__dtSeenCaptions.add(txt);
+                // Try to detect speaker from nearby elements
+                let speaker = "Speaker";
+                const parent = node.closest('[class*="caption"], [class*="transcript"]');
+                if (parent) {
+                  const speakerEl = parent.querySelector(
+                    '[class*="speaker"], [class*="name"], [class*="user"], [class*="sender"]'
+                  );
+                  if (speakerEl) {
+                    speaker = (speakerEl.textContent || "").trim().replace(/:$/, "") || "Speaker";
+                  }
+                }
+                window.__dtTranscripts.push({
+                  content: txt,
+                  speaker,
+                  startMs: Date.now() - window.__dtStartTime,
+                  confidence: 0.9,
+                });
+              }
+            });
+          }
         });
-        observer.observe(document.body, { childList: true, subtree: true });
-        console.log("[DT-Bot] Audio capture initialized");
-      } catch (e) {
-        console.log("[DT-Bot] Audio capture failed:", e.message);
       }
+
+      // Method 2: Look for Zoom's transcript panel items (when user opens transcript panel)
+      const transcriptItems = document.querySelectorAll(
+        '[class*="transcript"] [class*="message"], [class*="transcript"] [class*="item"]'
+      );
+      transcriptItems.forEach((item) => {
+        const text = (item.textContent || "").trim();
+        if (text && text.length > 2 && !window.__dtSeenCaptions.has(text)) {
+          window.__dtSeenCaptions.add(text);
+          // Try to split speaker:message pattern like "John: Hello everyone"
+          let speaker = "Speaker";
+          let content = text;
+          const colonMatch = text.match(/^([^:]{1,30}):\s*(.+)/);
+          if (colonMatch) {
+            speaker = colonMatch[1].trim();
+            content = colonMatch[2].trim();
+          }
+          window.__dtTranscripts.push({
+            content,
+            speaker,
+            startMs: Date.now() - window.__dtStartTime,
+            confidence: 0.9,
+          });
+        }
+      });
+
+      // Method 3: Generic — look for any element with aria-live="polite" (accessibility captions)
+      const liveRegions = document.querySelectorAll('[aria-live="polite"], [aria-live="assertive"], [role="log"]');
+      liveRegions.forEach((region) => {
+        const txt = (region.textContent || "").trim();
+        if (txt && txt.length > 2 && !window.__dtSeenCaptions.has(txt)) {
+          window.__dtSeenCaptions.add(txt);
+          window.__dtTranscripts.push({
+            content: txt,
+            speaker: "Speaker",
+            startMs: Date.now() - window.__dtStartTime,
+            confidence: 0.8,
+          });
+        }
+      });
+
+      // Prevent memory leak — cap seen captions set
+      if (window.__dtSeenCaptions.size > 5000) {
+        const arr = [...window.__dtSeenCaptions];
+        window.__dtSeenCaptions = new Set(arr.slice(-2000));
+      }
+    }
+
+    // Run scraper every 2 seconds
+    window.__dtCaptionInterval = setInterval(scrapeCaptions, 2000);
+
+    // Also observe DOM mutations for new caption elements
+    const observer = new MutationObserver(() => {
+      scrapeCaptions();
     });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    window.__dtCaptionObserver = observer;
 
-    // Also start Web Speech API as a parallel capture method
-    await startWebSpeechTranscription(page, meetingId);
+    console.log("[DT-Bot] Caption scraper initialized");
+  });
 
-    console.log(`[Bot] Deepgram + Web Speech both active for meeting ${meetingId}`);
-
-  } catch (e) {
-    console.log(`[Bot] Deepgram setup failed: ${e.message}`);
-    console.log(`[Bot] Falling back to Web Speech API only`);
-    await startWebSpeechTranscription(page, meetingId);
-  }
+  console.log(`[Bot] Zoom caption scraping active for meeting ${meetingId}`);
 }
 
 /**
- * Web Speech API Mode — Free, built into Chrome
- * Basic transcription without speaker identification
+ * Click Zoom's Live Transcript / CC button to enable captions
  */
-async function startWebSpeechTranscription(page, meetingId) {
-  try {
-    await page.evaluate(() => {
-      // Don't double-initialize
-      if (window.__dtSpeechStarted) return;
-      window.__dtSpeechStarted = true;
+async function enableZoomCaptions(page) {
+  // Wait a bit for toolbar to fully render
+  await delay(3000);
 
-      window.__dtTranscripts = window.__dtTranscripts || [];
-      window.__dtRecording = true;
-      window.__dtStartTime = window.__dtStartTime || Date.now();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const clicked = await page.evaluate(() => {
+        // Look for the CC / Live Transcript button in Zoom's toolbar
+        const allButtons = document.querySelectorAll(
+          'button, [role="button"], [role="menuitem"], a'
+        );
 
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        console.log("[DT-Bot] SpeechRecognition not available");
+        for (const btn of allButtons) {
+          const text = (btn.textContent || "").toLowerCase();
+          const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
+          const title = (btn.getAttribute("title") || "").toLowerCase();
+
+          const match =
+            text.includes("live transcript") ||
+            text.includes("cc") ||
+            text.includes("caption") ||
+            text.includes("subtitle") ||
+            ariaLabel.includes("live transcript") ||
+            ariaLabel.includes("closed caption") ||
+            ariaLabel.includes("caption") ||
+            title.includes("live transcript") ||
+            title.includes("caption");
+
+          // Avoid clicking random things — button text should be short
+          if (match && text.length < 40) {
+            btn.click();
+            return "clicked: " + text.trim().substring(0, 30);
+          }
+        }
+
+        // Also try clicking "More" (...) menu first, then look for transcript option
+        for (const btn of allButtons) {
+          const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
+          if (ariaLabel.includes("more") || ariaLabel === "...") {
+            btn.click();
+            return "clicked-more";
+          }
+        }
+
+        return false;
+      });
+
+      if (clicked === "clicked-more") {
+        // Wait for menu to open, then look for transcript option
+        await delay(1500);
+        const clickedTranscript = await page.evaluate(() => {
+          const items = document.querySelectorAll(
+            '[role="menuitem"], [role="option"], li, button'
+          );
+          for (const item of items) {
+            const text = (item.textContent || "").toLowerCase();
+            if (
+              text.includes("live transcript") ||
+              text.includes("caption") ||
+              text.includes("subtitle")
+            ) {
+              item.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (clickedTranscript) {
+          console.log(`[Bot] Enabled Live Transcript from More menu`);
+          await delay(1000);
+
+          // Now click "Enable" or "Show Subtitle" submenu if it appears
+          await page.evaluate(() => {
+            const items = document.querySelectorAll(
+              'button, [role="menuitem"], [role="option"], a, li'
+            );
+            for (const item of items) {
+              const text = (item.textContent || "").toLowerCase();
+              if (
+                text.includes("enable") ||
+                text.includes("show subtitle") ||
+                text.includes("view full transcript")
+              ) {
+                item.click();
+                return true;
+              }
+            }
+            return false;
+          });
+          return;
+        }
+      } else if (clicked && clicked !== false) {
+        console.log(`[Bot] ${clicked}`);
+        await delay(1500);
+
+        // Handle submenu — click "Enable" or "Show Subtitle"
+        await page.evaluate(() => {
+          const items = document.querySelectorAll(
+            'button, [role="menuitem"], [role="option"], a, li'
+          );
+          for (const item of items) {
+            const text = (item.textContent || "").toLowerCase();
+            if (
+              text.includes("enable") ||
+              text.includes("show subtitle") ||
+              text.includes("view full transcript")
+            ) {
+              item.click();
+              return true;
+            }
+          }
+          return false;
+        });
         return;
       }
 
-      function startRecognizer() {
-        if (!window.__dtRecording) return;
+      console.log(`[Bot] Caption button not found (attempt ${attempt + 1}/3) — will retry...`);
+      await delay(5000);
 
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = false;
-        recognition.lang = "en-US";
-        recognition.maxAlternatives = 1;
-
-        recognition.onresult = (event) => {
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            if (event.results[i].isFinal) {
-              const text = event.results[i][0].transcript.trim();
-              if (text) {
-                window.__dtTranscripts.push({
-                  content: text,
-                  confidence: event.results[i][0].confidence,
-                  startMs: Date.now() - window.__dtStartTime,
-                  speaker: "Speaker",
-                });
-              }
-            }
-          }
-        };
-
-        recognition.onerror = (event) => {
-          if (event.error === "no-speech" || event.error === "aborted") {
-            setTimeout(startRecognizer, 500);
-          } else {
-            console.log("[DT-Bot] Speech error:", event.error);
-            setTimeout(startRecognizer, 2000);
-          }
-        };
-
-        recognition.onend = () => {
-          if (window.__dtRecording) setTimeout(startRecognizer, 300);
-        };
-
-        try { recognition.start(); } catch (e) { setTimeout(startRecognizer, 1000); }
-      }
-
-      startRecognizer();
-      console.log("[DT-Bot] Web Speech API started");
-    });
-    console.log(`[Bot] Web Speech API active for meeting ${meetingId}`);
-  } catch (e) {
-    console.log(`[Bot] Could not start speech recognition: ${e.message}`);
+    } catch (e) {
+      console.log(`[Bot] Error enabling captions: ${e.message}`);
+      await delay(3000);
+    }
   }
+
+  console.log(`[Bot] Could not find CC button — captions may need to be enabled by the host`);
+  console.log(`[Bot] Caption scraping will still capture any visible captions`);
 }
 
 /**
- * Collect captured transcripts from the page and Deepgram, send to server
+ * Collect captured transcripts from the page and send to server
  */
 async function flushTranscripts(page, meetingId) {
   try {
-    // Get Web Speech API transcripts from the page
-    let webSegments = [];
+    let segments = [];
     try {
-      webSegments = await page.evaluate(() => {
+      segments = await page.evaluate(() => {
         const data = window.__dtTranscripts || [];
         window.__dtTranscripts = [];
         return data;
       });
     } catch (e) { /* page closed */ }
-
-    // Get Deepgram transcripts from buffer
-    let dgSegments = [];
-    const dgConn = deepgramConnections.get(meetingId);
-    if (dgConn && dgConn.buffer.length > 0) {
-      dgSegments = [...dgConn.buffer];
-      dgConn.buffer.length = 0; // Clear buffer
-    }
-
-    // Prefer Deepgram segments (they have speaker info), fall back to Web Speech
-    const segments = dgSegments.length > 0 ? dgSegments : webSegments;
 
     if (segments.length === 0) return;
 
@@ -760,7 +852,11 @@ async function flushTranscripts(page, meetingId) {
       endMs: seg.endMs || (segments[i + 1] ? segments[i + 1].startMs : seg.startMs + 5000),
     }));
 
-    console.log(`[Bot] Flushing ${enriched.length} transcript segments (${dgSegments.length > 0 ? "Deepgram" : "WebSpeech"})`);
+    console.log(`[Bot] Flushing ${enriched.length} transcript segments`);
+
+    for (const seg of enriched) {
+      console.log(`  [Transcript] ${seg.speaker}: ${seg.content.substring(0, 60)}`);
+    }
 
     await botApi(`/transcript/${meetingId}`, "POST", { segments: enriched });
   } catch (e) {
@@ -769,14 +865,10 @@ async function flushTranscripts(page, meetingId) {
 }
 
 /**
- * Close Deepgram connection for a meeting
+ * Cleanup — no longer needed for Deepgram but kept for compatibility
  */
 function closeDeepgram(meetingId) {
-  const conn = deepgramConnections.get(meetingId);
-  if (conn && conn.ws) {
-    try { conn.ws.close(); } catch (e) {}
-    deepgramConnections.delete(meetingId);
-  }
+  // No-op for caption-based transcription
 }
 
 // ─── Helpers ────────────────────────────────────────────
