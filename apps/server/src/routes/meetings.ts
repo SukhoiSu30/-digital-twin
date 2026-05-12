@@ -14,23 +14,29 @@ router.get("/", async (req: Request, res: Response) => {
     const userId = req.user!.userId;
     const now = new Date();
 
-    // ── Auto-cleanup: remove stale meetings on every fetch ──
-    // 1. Delete DISCOVERED/SCHEDULED meetings whose endTime has passed (expired, never used)
+    // ── Auto-cleanup: remove all stale past meetings ──
+    // Start of today (midnight)
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+
+    // 1. Delete ALL past meetings that have NO summary (no useful data to keep)
+    //    This covers DISCOVERED, SCHEDULED, JOINING, IN_PROGRESS, PROCESSING, FAILED, SKIPPED
     await prisma.meeting.deleteMany({
       where: {
         userId,
-        status: { in: ["DISCOVERED", "SCHEDULED"] },
-        endTime: { lt: now },
+        endTime: { lt: todayStart },
+        status: { not: "COMPLETED" },
       },
     });
 
-    // 2. Delete FAILED/SKIPPED meetings older than 24 hours
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    // 2. Delete COMPLETED meetings older than 7 days that have no summary
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     await prisma.meeting.deleteMany({
       where: {
         userId,
-        status: { in: ["FAILED", "SKIPPED"] },
-        endTime: { lt: yesterday },
+        status: "COMPLETED",
+        endTime: { lt: weekAgo },
+        summary: null,
       },
     });
 
@@ -42,10 +48,14 @@ router.get("/", async (req: Request, res: Response) => {
     }
 
     if (date && typeof date === "string") {
+      // Specific date filter
       const start = new Date(date);
       const end = new Date(date);
       end.setDate(end.getDate() + 1);
       where.startTime = { gte: start, lt: end };
+    } else {
+      // Default: only show meetings from today onwards
+      where.startTime = { gte: todayStart };
     }
 
     const [meetings, total] = await Promise.all([
