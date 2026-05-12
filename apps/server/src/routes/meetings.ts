@@ -54,8 +54,11 @@ router.get("/", async (req: Request, res: Response) => {
       end.setDate(end.getDate() + 1);
       where.startTime = { gte: start, lt: end };
     } else {
-      // Default: only show meetings from today onwards
-      where.startTime = { gte: todayStart };
+      // Default: show today + future meetings, PLUS any past COMPLETED meetings (they have summaries/transcripts)
+      where.OR = [
+        { startTime: { gte: todayStart } },                    // Today & future
+        { status: "COMPLETED", summary: { isNot: null } },     // Past meetings with summaries
+      ];
     }
 
     const [meetings, total] = await Promise.all([
