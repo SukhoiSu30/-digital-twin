@@ -1,16 +1,14 @@
 /**
- * Digital Twin — Local Zoom Bot (Fully Automated)
+ * Digital Twin — Local Zoom Bot v3.0
  *
- * Joins Zoom meetings as "Vaibhav Mujage" via browser.
- * Uses BOT_SECRET for auth — no Microsoft login needed.
- * Reports status back to the API so dashboard updates automatically.
+ * Architecture (matches colleague's approach):
+ *   Bot:         Puppeteer (Chromium browser automation)
+ *   Audio:       WebRTC interception — captures meeting audio directly from browser
+ *   Transcript:  Deepgram Nova-2 streaming (free $200 credit) OR Web Speech API fallback
+ *   Summary:     Claude Sonnet 4.6 via server API
  *
  * Usage:
- *   cd bot-local
- *   npm install
- *   node bot.js
- *
- * Or just double-click START-BOT.bat
+ *   cd bot-local && npm install && node bot.js
  */
 
 require("dotenv").config();
@@ -22,20 +20,30 @@ const BOT_SECRET = process.env.BOT_SECRET || "dt-bot-secret-2024";
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "";
 const BOT_NAME = "Vaibhav Mujage";
 const POLL_INTERVAL = 8000;
-const activeBots = new Map(); // meetingId -> { browser, page, status }
+const activeBots = new Map();
+const deepgramConnections = new Map();
+const deepgramBuffers = new Map();
+const useDeepgram = DEEPGRAM_API_KEY && DEEPGRAM_API_KEY.length > 10;
+
 console.log(`
 ╔══════════════════════════════════════════════╗
-║      Digital Twin — Local Zoom Bot           ║
+║      Digital Twin — Local Zoom Bot v3.0      ║
 ║                                              ║
 ║  Bot Name:  ${BOT_NAME.padEnd(33)}║
 ║  API:       ${API_URL.substring(0, 33).padEnd(33)}║
 ║  Polling:   Every ${POLL_INTERVAL / 1000}s                        ║
 ║  Auth:      BOT_SECRET                       ║
-║  Transcribe: Zoom Live Captions (DOM scrape) ║
+║  Transcribe: ${(useDeepgram ? "Deepgram Nova-2 (WebRTC capture)" : "Web Speech API (fallback)").padEnd(32)}║
 ║                                              ║
 ║  Press Ctrl+C to stop                        ║
 ╚══════════════════════════════════════════════╝
 `);
+
+if (!useDeepgram) {
+  console.log(`[Bot] WARNING: No Deepgram API key found.`);
+  console.log(`[Bot] Get free $200 credit at https://console.deepgram.com`);
+  console.log(`[Bot] Add DEEPGRAM_API_KEY to bot-local/.env for best transcription.\n`);
+}
 
 // ─── API Helpers ────────────────────────────────────────
 
@@ -97,7 +105,6 @@ async function startPolling() {
         console.log(`[Bot] Found meeting to join: "${meeting.title}"`);
         console.log(`[Bot] Zoom URL: ${meeting.zoomJoinUrl}`);
 
-        // Mark as active immediately to prevent double-joining
         activeBots.set(meeting.id, { status: "starting" });
 
         joinMeeting(meeting).catch(async (err) => {
@@ -155,6 +162,11 @@ async function joinMeeting(meeting) {
       "microphone", "camera", "notifications",
     ]);
 
+    // ── Set up WebRTC audio interception BEFORE navigating to Zoom ──
+    if (useDeepgram) {
+      await setupWebRTCInterception(page, id);
+    }
+
     // ── Build Zoom Web Client URL ──
     let joinUrl = `https://app.zoom.us/wc/join/${zoomMeetingId}`;
     if (zoomPasscode) {
@@ -204,7 +216,6 @@ async function joinMeeting(meeting) {
     console.log(`[Bot] Setting name to "${BOT_NAME}"...`);
     let nameSet = false;
 
-    // Method 1: Find name input by common selectors
     const nameSelectors = [
       "#inputname",
       'input[name="inputname"]',
@@ -229,7 +240,6 @@ async function joinMeeting(meeting) {
       } catch (e) { /* try next */ }
     }
 
-    // Method 2: Use React native setter
     if (!nameSet) {
       nameSet = await page.evaluate((name) => {
         const inputs = document.querySelectorAll('input[type="text"], input:not([type])');
@@ -249,31 +259,24 @@ async function joinMeeting(meeting) {
         }
         return false;
       }, BOT_NAME);
-
       if (nameSet) console.log(`[Bot] Name set via React setter`);
     }
 
-    if (!nameSet) {
-      console.log(`[Bot] WARNING: Could not find name input — continuing anyway`);
-    }
+    if (!nameSet) console.log(`[Bot] WARNING: Could not find name input`);
 
     await delay(1000);
 
-    // ── Accept checkboxes (terms, agreements) ──
+    // ── Accept checkboxes ──
     await page.evaluate(() => {
       const checkboxes = document.querySelectorAll('input[type="checkbox"]');
       checkboxes.forEach(cb => { if (!cb.checked) cb.click(); });
     });
-    console.log(`[Bot] Checked any required checkboxes`);
 
     await delay(500);
 
     // ── Click Join Button ──
     console.log(`[Bot] Looking for Join button...`);
-    let joinClicked = false;
-
-    // Method 1: Find by button text
-    joinClicked = await page.evaluate(() => {
+    let joinClicked = await page.evaluate(() => {
       const clickable = document.querySelectorAll(
         'button, input[type="button"], input[type="submit"], a.btn, [role="button"]'
       );
@@ -287,97 +290,74 @@ async function joinMeeting(meeting) {
       return false;
     });
 
-    // Method 2: Try specific Zoom selectors
     if (!joinClicked) {
-      const joinSelectors = [
-        "#joinBtn",
-        'button[id*="join" i]',
-        'button.join-btn',
-        'button.zm-btn--primary',
-        'button.preview-join-button',
-        'button[class*="join" i]',
-      ];
+      const joinSelectors = ["#joinBtn", 'button[id*="join" i]', 'button.zm-btn--primary', 'button.preview-join-button'];
       for (const sel of joinSelectors) {
         try {
           const btn = await page.$(sel);
-          if (btn) {
-            await btn.click();
-            joinClicked = true;
-            console.log(`[Bot] Join clicked via selector: ${sel}`);
-            break;
-          }
-        } catch (e) { /* try next */ }
+          if (btn) { await btn.click(); joinClicked = true; break; }
+        } catch (e) {}
       }
     }
 
-    // Method 3: Press Enter as fallback
     if (!joinClicked) {
-      console.log(`[Bot] Trying Enter key as fallback...`);
       await page.keyboard.press("Enter");
       joinClicked = true;
     }
 
     console.log(`[Bot] Join button clicked: ${joinClicked}`);
-
     await delay(4000);
     await page.screenshot({ path: "debug-step2-join-clicked.png" });
 
-    // ── Handle Passcode Prompt ──
+    // ── Handle Passcode ──
     if (zoomPasscode) {
       const passcodeInput = await page.$(
-        '#inputpasscode, input[type="password"], input[placeholder*="passcode" i], input[placeholder*="password" i]'
+        '#inputpasscode, input[type="password"], input[placeholder*="passcode" i]'
       );
       if (passcodeInput) {
         await passcodeInput.click({ clickCount: 3 });
         await passcodeInput.type(zoomPasscode, { delay: 50 });
         console.log(`[Bot] Entered passcode`);
         await delay(1000);
-
         await page.evaluate(() => {
           const buttons = document.querySelectorAll("button");
           for (const btn of buttons) {
-            if ((btn.textContent || "").toLowerCase().includes("join")) {
-              btn.click();
-              break;
-            }
+            if ((btn.textContent || "").toLowerCase().includes("join")) { btn.click(); break; }
           }
         });
         await delay(3000);
       }
     }
 
-    // ── Handle "Join Audio by Computer" popup ──
+    // ── Handle "Join Audio by Computer" ──
     await delay(2000);
     await page.evaluate(() => {
       const buttons = document.querySelectorAll("button");
       for (const btn of buttons) {
         const text = (btn.textContent || "").toLowerCase();
         if (text.includes("join audio") || text.includes("computer audio") || text.includes("join with computer")) {
-          btn.click();
-          break;
+          btn.click(); break;
         }
       }
     });
 
-    // Report waiting in lobby
+    // Report waiting
     await reportWaiting(id);
-    console.log(`\n[Bot] Waiting for host to admit "${BOT_NAME}"...`);
-    console.log(`[Bot] The host will see "${BOT_NAME}" in the waiting room.\n`);
+    console.log(`\n[Bot] Waiting for host to admit "${BOT_NAME}"...\n`);
 
     // ── Wait for Meeting Join ──
     activeBots.set(id, { status: "waiting", browser, page });
     let inMeeting = false;
     let attempts = 0;
-    const MAX_WAIT_ATTEMPTS = 120; // 10 minutes max wait
+    const MAX_WAIT = 120;
 
-    while (!inMeeting && attempts < MAX_WAIT_ATTEMPTS) {
+    while (!inMeeting && attempts < MAX_WAIT) {
       attempts++;
       await delay(5000);
 
-      // Check if meeting was cancelled from dashboard
       const stillActive = await checkStillActive(id);
       if (!stillActive) {
-        console.log(`[Bot] Meeting ${id} was cancelled from dashboard — closing browser`);
+        console.log(`[Bot] Meeting cancelled from dashboard`);
         await browser.close().catch(() => {});
         activeBots.delete(id);
         return;
@@ -393,9 +373,7 @@ async function joinMeeting(meeting) {
             document.querySelector('button[aria-label*="Mute"]'),
             document.querySelector('button[aria-label*="mute"]'),
             document.querySelector('[class*="footer"]'),
-            document.querySelector('[class*="meeting-info"]'),
             document.querySelector('[class*="video-avatar"]'),
-            document.querySelector('[class*="chat-container"]'),
           ];
           return indicators.some(el => el !== null);
         });
@@ -406,29 +384,23 @@ async function joinMeeting(meeting) {
         if (
           pageText.includes("meeting has ended") ||
           pageText.includes("host has ended") ||
-          pageText.includes("removed from the meeting") ||
-          pageText.includes("meeting has been locked")
+          pageText.includes("removed from the meeting")
         ) {
-          console.log(`[Bot] Meeting ended or access denied`);
           await reportFailed(id, "Meeting ended or access denied");
           await browser.close().catch(() => {});
           activeBots.delete(id);
           return;
         }
 
-        // Handle "Join Audio" popup again
+        // Retry "Join Audio" popup
         await page.evaluate(() => {
           const buttons = document.querySelectorAll("button");
           for (const btn of buttons) {
             const text = (btn.textContent || "").toLowerCase();
-            if (text.includes("join audio") || text.includes("computer audio")) {
-              btn.click();
-              break;
-            }
+            if (text.includes("join audio") || text.includes("computer audio")) { btn.click(); break; }
           }
         });
-
-      } catch (e) { /* page navigated */ }
+      } catch (e) {}
 
       if (attempts % 12 === 0) {
         console.log(`[Bot] Still waiting... (${attempts * 5}s)`);
@@ -436,30 +408,24 @@ async function joinMeeting(meeting) {
       }
     }
 
-    // ── Handle Join Result ──
+    // ── In Meeting ──
     if (inMeeting) {
       console.log(`\n${"=".repeat(50)}`);
       console.log(`[Bot] JOINED: ${title}`);
-      console.log(`[Bot] As: ${BOT_NAME}`);
       console.log(`[Bot] Meeting is LIVE`);
       console.log(`${"=".repeat(50)}\n`);
 
       await reportJoined(id);
-
       activeBots.set(id, { status: "active", browser, page });
-
       await page.screenshot({ path: "debug-step3-in-meeting.png" });
 
-      // ── Start Speech Recognition for Transcription ──
-      console.log(`[Bot] Starting speech recognition for transcription...`);
-      await startSpeechRecognition(page, id);
+      // ── Start Transcription ──
+      await startTranscription(page, id);
 
-      // ── Periodically flush transcripts to server ──
+      // ── Periodic transcript flush ──
       const transcriptFlush = setInterval(async () => {
-        try {
-          await flushTranscripts(page, id);
-        } catch (e) { /* page may have closed */ }
-      }, 15000); // Every 15 seconds
+        try { await flushTranscripts(page, id); } catch (e) {}
+      }, 10000);
 
       // ── Monitor for meeting end ──
       const endCheck = setInterval(async () => {
@@ -468,8 +434,7 @@ async function joinMeeting(meeting) {
           if (!stillActive) {
             clearInterval(endCheck);
             clearInterval(transcriptFlush);
-            await flushTranscripts(page, id).catch(() => {}); // Final flush
-            console.log(`[Bot] Meeting ${id} cancelled — leaving`);
+            await flushTranscripts(page, id).catch(() => {});
             closeDeepgram(id);
             await browser.close().catch(() => {});
             activeBots.delete(id);
@@ -492,18 +457,15 @@ async function joinMeeting(meeting) {
             clearInterval(endCheck);
             clearInterval(transcriptFlush);
             console.log(`\n[Bot] Meeting ended: "${title}"`);
-            // Final transcript flush + close Deepgram
+
             await flushTranscripts(page, id).catch(() => {});
             closeDeepgram(id);
-            // Report ended and trigger summary
             await reportEnded(id);
+
             console.log(`[Bot] Triggering summary generation...`);
             const summaryResult = await botApi(`/generate-summary/${id}`, "POST");
-            if (summaryResult.success) {
-              console.log(`[Bot] Summary generated successfully!`);
-            } else {
-              console.log(`[Bot] Summary: ${summaryResult.error || "pending"}`);
-            }
+            console.log(`[Bot] Summary: ${summaryResult.success ? "Generated!" : (summaryResult.error || "pending")}`);
+
             await browser.close().catch(() => {});
             activeBots.delete(id);
           }
@@ -513,15 +475,14 @@ async function joinMeeting(meeting) {
           await flushTranscripts(page, id).catch(() => {});
           closeDeepgram(id);
           await reportEnded(id).catch(() => {});
-          // Try to generate summary even on error
           await botApi(`/generate-summary/${id}`, "POST").catch(() => {});
           activeBots.delete(id);
         }
       }, 8000);
 
     } else {
-      console.log(`[Bot] Timed out waiting to join "${title}"`);
-      await reportFailed(id, "Timed out waiting for host to admit bot");
+      console.log(`[Bot] Timed out waiting to join`);
+      await reportFailed(id, "Timed out waiting for host");
       await browser.close().catch(() => {});
       activeBots.delete(id);
     }
@@ -534,328 +495,313 @@ async function joinMeeting(meeting) {
   }
 }
 
-// ─── Transcription via Zoom's Live Captions ────────────────
-//
-// WHY: Web Speech API listens to the microphone, but Puppeteer uses
-//      a fake device (--use-fake-device-for-media-stream) so it hears
-//      almost nothing. Instead we enable Zoom's built-in Live Transcript
-//      and scrape the caption text from the DOM. Zoom does its own
-//      speech-to-text with speaker names — much more reliable.
+// ═══════════════════════════════════════════════════════════
+// ─── TRANSCRIPTION ENGINE ─────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 
 /**
- * Start transcription for a meeting.
- * Enables Zoom's Live Transcript / CC button and scrapes captions.
+ * Set up WebRTC interception BEFORE Zoom loads.
+ *
+ * This patches RTCPeerConnection so when Zoom receives audio
+ * from other participants, we intercept the audio track,
+ * capture raw PCM via AudioContext + ScriptProcessor,
+ * and send it to Node.js for Deepgram streaming.
  */
-async function startSpeechRecognition(page, meetingId) {
-  console.log(`[Bot] Enabling Zoom Live Captions for transcription...`);
-
-  // Initialize transcript store on the page
-  await page.evaluate(() => {
-    window.__dtTranscripts = [];
-    window.__dtSeenCaptions = new Set();
-    window.__dtRecording = true;
-    window.__dtStartTime = Date.now();
+async function setupWebRTCInterception(page, meetingId) {
+  // Expose a function so the browser page can send audio data to Node.js
+  await page.exposeFunction("__dtSendAudioChunk", (base64PCM) => {
+    const ws = deepgramConnections.get(meetingId);
+    if (ws && ws.readyState === 1) { // WebSocket.OPEN
+      const buffer = Buffer.from(base64PCM, "base64");
+      ws.send(buffer);
+    }
   });
 
-  // Try to click the "Live Transcript" / "CC" button to enable captions
-  await enableZoomCaptions(page);
+  // Inject RTCPeerConnection patch that runs on EVERY new document
+  await page.evaluateOnNewDocument(() => {
+    if (window.__dtRTCPatched) return;
+    window.__dtRTCPatched = true;
 
-  // Start a MutationObserver on the page to capture caption elements in real time
-  await page.evaluate(() => {
-    if (window.__dtCaptionObserverStarted) return;
-    window.__dtCaptionObserverStarted = true;
+    const OrigRTC = window.RTCPeerConnection;
 
-    // Zoom renders captions in various containers. We scan for new text nodes
-    // in elements that match Zoom's caption patterns.
-    const captionSelectors = [
-      // Zoom Web Client caption containers (various versions)
-      '[class*="caption"]',
-      '[class*="subtitle"]',
-      '[class*="transcript"]',
-      '[class*="closed-caption"]',
-      '[class*="live-transcription"]',
-      '[id*="caption"]',
-      '[id*="transcript"]',
-      // Zoom's specific transcript panel elements
-      '.transcript-message',
-      '.caption-text',
-      '.live-transcript-content',
-    ];
+    window.RTCPeerConnection = function (...args) {
+      const pc = new OrigRTC(...args);
 
-    function scrapeCaptions() {
-      if (!window.__dtRecording) return;
+      pc.addEventListener("track", (event) => {
+        if (event.track.kind === "audio" && !window.__dtAudioCaptureActive) {
+          window.__dtAudioCaptureActive = true;
+          console.log("[DT-Bot] WebRTC audio track intercepted!");
 
-      // Method 1: Look for caption/subtitle elements by class
-      for (const sel of captionSelectors) {
-        const elements = document.querySelectorAll(sel);
-        elements.forEach((el) => {
-          // Get all text content spans inside caption containers
-          const textNodes = el.querySelectorAll("span, p, div");
-          if (textNodes.length === 0) {
-            // Check the element itself
-            const txt = (el.textContent || "").trim();
-            if (txt && txt.length > 1 && !window.__dtSeenCaptions.has(txt)) {
-              window.__dtSeenCaptions.add(txt);
-              window.__dtTranscripts.push({
-                content: txt,
-                speaker: "Speaker",
-                startMs: Date.now() - window.__dtStartTime,
-                confidence: 0.9,
-              });
-            }
-          } else {
-            textNodes.forEach((node) => {
-              const txt = (node.textContent || "").trim();
-              if (txt && txt.length > 1 && !window.__dtSeenCaptions.has(txt)) {
-                window.__dtSeenCaptions.add(txt);
-                // Try to detect speaker from nearby elements
-                let speaker = "Speaker";
-                const parent = node.closest('[class*="caption"], [class*="transcript"]');
-                if (parent) {
-                  const speakerEl = parent.querySelector(
-                    '[class*="speaker"], [class*="name"], [class*="user"], [class*="sender"]'
-                  );
-                  if (speakerEl) {
-                    speaker = (speakerEl.textContent || "").trim().replace(/:$/, "") || "Speaker";
-                  }
+          const stream = event.streams[0] || new MediaStream([event.track]);
+
+          try {
+            const ctx = new AudioContext({ sampleRate: 16000 });
+            const source = ctx.createMediaStreamSource(stream);
+
+            // ScriptProcessorNode captures raw PCM for Deepgram
+            const processor = ctx.createScriptProcessor(4096, 1, 1);
+
+            processor.onaudioprocess = (e) => {
+              if (!window.__dtRecording) return;
+
+              const float32 = e.inputBuffer.getChannelData(0);
+
+              // Convert Float32 [-1,1] → Int16 [-32768,32767] (Deepgram linear16)
+              const int16 = new Int16Array(float32.length);
+              for (let i = 0; i < float32.length; i++) {
+                const s = Math.max(-1, Math.min(1, float32[i]));
+                int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+              }
+
+              // Convert to base64 for transfer to Node.js
+              const bytes = new Uint8Array(int16.buffer);
+              let binary = "";
+              const chunkSize = 8192;
+              for (let i = 0; i < bytes.length; i += chunkSize) {
+                const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+                for (let j = 0; j < slice.length; j++) {
+                  binary += String.fromCharCode(slice[j]);
                 }
-                window.__dtTranscripts.push({
-                  content: txt,
-                  speaker,
-                  startMs: Date.now() - window.__dtStartTime,
-                  confidence: 0.9,
-                });
               }
-            });
-          }
-        });
-      }
 
-      // Method 2: Look for Zoom's transcript panel items (when user opens transcript panel)
-      const transcriptItems = document.querySelectorAll(
-        '[class*="transcript"] [class*="message"], [class*="transcript"] [class*="item"]'
-      );
-      transcriptItems.forEach((item) => {
-        const text = (item.textContent || "").trim();
-        if (text && text.length > 2 && !window.__dtSeenCaptions.has(text)) {
-          window.__dtSeenCaptions.add(text);
-          // Try to split speaker:message pattern like "John: Hello everyone"
-          let speaker = "Speaker";
-          let content = text;
-          const colonMatch = text.match(/^([^:]{1,30}):\s*(.+)/);
-          if (colonMatch) {
-            speaker = colonMatch[1].trim();
-            content = colonMatch[2].trim();
+              try {
+                window.__dtSendAudioChunk(btoa(binary));
+              } catch (err) {
+                // Function not available yet
+              }
+            };
+
+            source.connect(processor);
+            processor.connect(ctx.destination); // Keep audio playing
+
+            console.log("[DT-Bot] Audio capture pipeline: WebRTC → PCM16 → Deepgram");
+          } catch (err) {
+            console.error("[DT-Bot] Audio capture setup failed:", err.message);
           }
-          window.__dtTranscripts.push({
-            content,
-            speaker,
-            startMs: Date.now() - window.__dtStartTime,
-            confidence: 0.9,
-          });
         }
       });
 
-      // Method 3: Generic — look for any element with aria-live="polite" (accessibility captions)
-      const liveRegions = document.querySelectorAll('[aria-live="polite"], [aria-live="assertive"], [role="log"]');
-      liveRegions.forEach((region) => {
-        const txt = (region.textContent || "").trim();
-        if (txt && txt.length > 2 && !window.__dtSeenCaptions.has(txt)) {
-          window.__dtSeenCaptions.add(txt);
-          window.__dtTranscripts.push({
-            content: txt,
-            speaker: "Speaker",
-            startMs: Date.now() - window.__dtStartTime,
-            confidence: 0.8,
-          });
-        }
-      });
+      return pc;
+    };
 
-      // Prevent memory leak — cap seen captions set
-      if (window.__dtSeenCaptions.size > 5000) {
-        const arr = [...window.__dtSeenCaptions];
-        window.__dtSeenCaptions = new Set(arr.slice(-2000));
-      }
+    // Preserve prototype and static methods
+    window.RTCPeerConnection.prototype = OrigRTC.prototype;
+    if (OrigRTC.generateCertificate) {
+      window.RTCPeerConnection.generateCertificate = OrigRTC.generateCertificate;
     }
 
-    // Run scraper every 2 seconds
-    window.__dtCaptionInterval = setInterval(scrapeCaptions, 2000);
-
-    // Also observe DOM mutations for new caption elements
-    const observer = new MutationObserver(() => {
-      scrapeCaptions();
-    });
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-    window.__dtCaptionObserver = observer;
-
-    console.log("[DT-Bot] Caption scraper initialized");
+    console.log("[DT-Bot] RTCPeerConnection patched for audio interception");
   });
 
-  console.log(`[Bot] Zoom caption scraping active for meeting ${meetingId}`);
+  console.log(`[Bot] WebRTC audio interception set up for meeting ${meetingId}`);
 }
 
 /**
- * Click Zoom's Live Transcript / CC button to enable captions
+ * Start transcription after joining the meeting.
+ * Deepgram mode: Connect WebSocket, audio already flowing from WebRTC patch.
+ * Fallback mode: Use Web Speech API.
  */
-async function enableZoomCaptions(page) {
-  // Wait a bit for toolbar to fully render
-  await delay(3000);
+async function startTranscription(page, meetingId) {
+  // Initialize transcript storage on the page
+  await page.evaluate(() => {
+    window.__dtTranscripts = window.__dtTranscripts || [];
+    window.__dtSeenTexts = new Set();
+    window.__dtRecording = true;
+    window.__dtStartTime = window.__dtStartTime || Date.now();
+  });
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  if (useDeepgram) {
+    console.log(`[Bot] Starting Deepgram Nova-2 streaming transcription...`);
+    await startDeepgramStream(meetingId);
+  } else {
+    console.log(`[Bot] Starting Web Speech API transcription (fallback)...`);
+    await startWebSpeechFallback(page, meetingId);
+  }
+}
+
+/**
+ * DEEPGRAM MODE — Connect to Deepgram's real-time streaming API.
+ * Audio is already being sent from the WebRTC interception patch.
+ */
+async function startDeepgramStream(meetingId) {
+  const WebSocket = require("ws");
+
+  const params = new URLSearchParams({
+    model: "nova-2",
+    language: "en",
+    smart_format: "true",
+    punctuate: "true",
+    diarize: "true",
+    interim_results: "false",
+    endpointing: "300",
+    encoding: "linear16",
+    sample_rate: "16000",
+    channels: "1",
+  });
+
+  const dgUrl = `wss://api.deepgram.com/v1/listen?${params}`;
+
+  const ws = new WebSocket(dgUrl, {
+    headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
+  });
+
+  // Initialize buffer for this meeting
+  deepgramBuffers.set(meetingId, []);
+
+  ws.on("open", () => {
+    console.log(`[Bot] Deepgram WebSocket connected — streaming audio`);
+    deepgramConnections.set(meetingId, ws);
+  });
+
+  ws.on("message", (data) => {
     try {
-      const clicked = await page.evaluate(() => {
-        // Look for the CC / Live Transcript button in Zoom's toolbar
-        const allButtons = document.querySelectorAll(
-          'button, [role="button"], [role="menuitem"], a'
-        );
+      const msg = JSON.parse(data.toString());
+      const alt = msg?.channel?.alternatives?.[0];
+      if (!alt?.transcript) return;
 
-        for (const btn of allButtons) {
-          const text = (btn.textContent || "").toLowerCase();
-          const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
-          const title = (btn.getAttribute("title") || "").toLowerCase();
+      const text = alt.transcript.trim();
+      if (!text || !msg.is_final) return;
 
-          const match =
-            text.includes("live transcript") ||
-            text.includes("cc") ||
-            text.includes("caption") ||
-            text.includes("subtitle") ||
-            ariaLabel.includes("live transcript") ||
-            ariaLabel.includes("closed caption") ||
-            ariaLabel.includes("caption") ||
-            title.includes("live transcript") ||
-            title.includes("caption");
+      // Extract speaker from diarization
+      const speaker = alt.words?.[0]?.speaker;
+      const speakerLabel = speaker !== undefined ? `Speaker ${speaker}` : "Speaker";
+      const startMs = Math.floor((msg.start || 0) * 1000);
+      const endMs = Math.floor(((msg.start || 0) + (msg.duration || 0)) * 1000);
 
-          // Avoid clicking random things — button text should be short
-          if (match && text.length < 40) {
-            btn.click();
-            return "clicked: " + text.trim().substring(0, 30);
-          }
-        }
-
-        // Also try clicking "More" (...) menu first, then look for transcript option
-        for (const btn of allButtons) {
-          const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
-          if (ariaLabel.includes("more") || ariaLabel === "...") {
-            btn.click();
-            return "clicked-more";
-          }
-        }
-
-        return false;
+      const buffer = deepgramBuffers.get(meetingId) || [];
+      buffer.push({
+        content: text,
+        speaker: speakerLabel,
+        startMs,
+        endMs,
+        confidence: alt.confidence || 1.0,
+        source: "deepgram",
       });
+      deepgramBuffers.set(meetingId, buffer);
 
-      if (clicked === "clicked-more") {
-        // Wait for menu to open, then look for transcript option
-        await delay(1500);
-        const clickedTranscript = await page.evaluate(() => {
-          const items = document.querySelectorAll(
-            '[role="menuitem"], [role="option"], li, button'
-          );
-          for (const item of items) {
-            const text = (item.textContent || "").toLowerCase();
-            if (
-              text.includes("live transcript") ||
-              text.includes("caption") ||
-              text.includes("subtitle")
-            ) {
-              item.click();
-              return true;
-            }
-          }
-          return false;
-        });
-        if (clickedTranscript) {
-          console.log(`[Bot] Enabled Live Transcript from More menu`);
-          await delay(1000);
+      console.log(`[Deepgram] ${speakerLabel}: ${text.substring(0, 80)}`);
+    } catch (e) { /* parse error */ }
+  });
 
-          // Now click "Enable" or "Show Subtitle" submenu if it appears
-          await page.evaluate(() => {
-            const items = document.querySelectorAll(
-              'button, [role="menuitem"], [role="option"], a, li'
-            );
-            for (const item of items) {
-              const text = (item.textContent || "").toLowerCase();
-              if (
-                text.includes("enable") ||
-                text.includes("show subtitle") ||
-                text.includes("view full transcript")
-              ) {
-                item.click();
-                return true;
+  ws.on("error", (err) => {
+    console.error(`[Bot] Deepgram WebSocket error:`, err.message);
+  });
+
+  ws.on("close", (code, reason) => {
+    console.log(`[Bot] Deepgram connection closed (${code})`);
+    deepgramConnections.delete(meetingId);
+  });
+}
+
+/**
+ * WEB SPEECH API FALLBACK — for when no Deepgram key is available.
+ * Uses Chrome's built-in speech recognition via system microphone.
+ *
+ * For better results, enable "Stereo Mix" in Windows Sound Settings
+ * so the mic hears system audio directly instead of through speakers.
+ */
+async function startWebSpeechFallback(page, meetingId) {
+  console.log(`[Bot] TIP: Enable "Stereo Mix" in Windows Sound Settings for better transcription.`);
+
+  try {
+    await page.evaluate(() => {
+      if (window.__dtWebSpeechStarted) return;
+      window.__dtWebSpeechStarted = true;
+
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { console.log("[DT-Bot] SpeechRecognition not available"); return; }
+
+      let sessionId = 0;
+
+      function startSession() {
+        if (!window.__dtRecording) return;
+        sessionId++;
+        const sid = sessionId;
+
+        const r = new SR();
+        r.continuous = true;
+        r.interimResults = false;
+        r.lang = "en-US";
+
+        r.onresult = (event) => {
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              const text = event.results[i][0].transcript.trim();
+              if (text && !window.__dtSeenTexts.has(text)) {
+                window.__dtSeenTexts.add(text);
+                window.__dtTranscripts.push({
+                  content: text,
+                  speaker: "Speaker",
+                  startMs: Date.now() - window.__dtStartTime,
+                  confidence: event.results[i][0].confidence || 0.8,
+                  source: "webspeech",
+                });
+                console.log(`[DT-Speech] "${text.substring(0, 60)}"`);
               }
             }
-            return false;
-          });
-          return;
-        }
-      } else if (clicked && clicked !== false) {
-        console.log(`[Bot] ${clicked}`);
-        await delay(1500);
-
-        // Handle submenu — click "Enable" or "Show Subtitle"
-        await page.evaluate(() => {
-          const items = document.querySelectorAll(
-            'button, [role="menuitem"], [role="option"], a, li'
-          );
-          for (const item of items) {
-            const text = (item.textContent || "").toLowerCase();
-            if (
-              text.includes("enable") ||
-              text.includes("show subtitle") ||
-              text.includes("view full transcript")
-            ) {
-              item.click();
-              return true;
-            }
           }
-          return false;
-        });
-        return;
+        };
+
+        r.onerror = (e) => {
+          if (e.error === "no-speech") setTimeout(startSession, 300);
+          else if (e.error === "not-allowed") console.log("[DT-Speech] Mic denied!");
+          else setTimeout(startSession, 1000);
+        };
+
+        r.onend = () => {
+          if (window.__dtRecording && sid === sessionId) setTimeout(startSession, 200);
+        };
+
+        try { r.start(); } catch (e) { setTimeout(startSession, 1000); }
       }
 
-      console.log(`[Bot] Caption button not found (attempt ${attempt + 1}/3) — will retry...`);
-      await delay(5000);
+      startSession();
+      console.log("[DT-Bot] Web Speech API started");
+    });
 
-    } catch (e) {
-      console.log(`[Bot] Error enabling captions: ${e.message}`);
-      await delay(3000);
-    }
+    console.log(`[Bot] Web Speech API active`);
+  } catch (e) {
+    console.log(`[Bot] Web Speech API failed: ${e.message}`);
   }
-
-  console.log(`[Bot] Could not find CC button — captions may need to be enabled by the host`);
-  console.log(`[Bot] Caption scraping will still capture any visible captions`);
 }
 
 /**
- * Collect captured transcripts from the page and send to server
+ * Flush transcripts to server — collects from Deepgram buffer and/or page
  */
 async function flushTranscripts(page, meetingId) {
   try {
     let segments = [];
+
+    // Get Deepgram buffer (stored in Node.js memory)
+    const dgBuffer = deepgramBuffers.get(meetingId);
+    if (dgBuffer && dgBuffer.length > 0) {
+      segments = [...dgBuffer];
+      dgBuffer.length = 0; // Clear buffer
+    }
+
+    // Also get any Web Speech API results from the page
     try {
-      segments = await page.evaluate(() => {
+      const pageSegments = await page.evaluate(() => {
         const data = window.__dtTranscripts || [];
         window.__dtTranscripts = [];
         return data;
       });
+      if (pageSegments.length > 0) {
+        segments = segments.concat(pageSegments);
+      }
     } catch (e) { /* page closed */ }
 
     if (segments.length === 0) return;
 
-    // Enrich with endMs if missing
+    // Enrich with endMs
     const enriched = segments.map((seg, i) => ({
       ...seg,
       endMs: seg.endMs || (segments[i + 1] ? segments[i + 1].startMs : seg.startMs + 5000),
     }));
 
-    console.log(`[Bot] Flushing ${enriched.length} transcript segments`);
-
+    console.log(`[Bot] Flushing ${enriched.length} transcript segments:`);
     for (const seg of enriched) {
-      console.log(`  [Transcript] ${seg.speaker}: ${seg.content.substring(0, 60)}`);
+      console.log(`  [${seg.source}] ${seg.speaker}: ${seg.content.substring(0, 70)}`);
     }
 
     await botApi(`/transcript/${meetingId}`, "POST", { segments: enriched });
@@ -865,10 +811,15 @@ async function flushTranscripts(page, meetingId) {
 }
 
 /**
- * Cleanup — no longer needed for Deepgram but kept for compatibility
+ * Close Deepgram connection for a meeting
  */
 function closeDeepgram(meetingId) {
-  // No-op for caption-based transcription
+  const ws = deepgramConnections.get(meetingId);
+  if (ws) {
+    try { ws.close(); } catch (e) {}
+    deepgramConnections.delete(meetingId);
+  }
+  deepgramBuffers.delete(meetingId);
 }
 
 // ─── Helpers ────────────────────────────────────────────
@@ -881,6 +832,7 @@ function delay(ms) {
 
 process.on("SIGINT", async () => {
   console.log("\n[Bot] Shutting down...");
+  for (const [mid] of deepgramConnections) closeDeepgram(mid);
   for (const [, bot] of activeBots) {
     if (bot.browser) await bot.browser.close().catch(() => {});
   }
