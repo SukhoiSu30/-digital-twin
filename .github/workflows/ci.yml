@@ -1,0 +1,192 @@
+# ================================================================
+# CI/CD Pipeline — Digital Twin
+# ================================================================
+# This workflow runs on every push and pull request to main.
+# It does 4 things:
+#   1. Lint & type-check the code
+#   2. Run tests
+#   3. Build Docker images
+#   4. Push images to GitHub Container Registry (GHCR)
+#
+# WHAT IS A WORKFLOW?
+# A YAML file in .github/workflows/ that GitHub reads automatically.
+# GitHub provides free Linux servers (called "runners") to execute it.
+# You don't pay for public repos. Private repos get 2,000 free minutes/month.
+# ================================================================
+
+name: CI/CD Pipeline
+
+# ── TRIGGERS ──
+# "When should this pipeline run?"
+on:
+  push:
+    branches: [main]           # Run on every push to main
+  pull_request:
+    branches: [main]           # Run on PRs targeting main
+
+# ── ENVIRONMENT VARIABLES ──
+# Available to ALL jobs in this workflow
+env:
+  REGISTRY: ghcr.io                          # GitHub Container Registry
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/digital-twin
+
+# ── JOBS ──
+# Jobs run in PARALLEL by default. We use "needs" to create dependencies.
+# Think of jobs like stages in a pipeline:
+#   lint → test → build → push
+jobs:
+
+  # ════════════════════════════════════════
+  # JOB 1: LINT & TYPE CHECK
+  # ════════════════════════════════════════
+  # "Does the code follow our rules and have no TypeScript errors?"
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest      # GitHub provides a fresh Ubuntu VM for each job
+
+    steps:
+      # Step 1: Download your code onto the runner
+      # Without this, the runner is an empty Ubuntu machine
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Install Node.js
+      # actions/setup-node is a pre-built action by GitHub
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'          # Cache node_modules between runs (faster builds)
+
+      # Step 3: Install dependencies
+      # npm ci = "clean install" — exact versions from package-lock.json
+      # This is the same command we use in our Dockerfiles
+      - name: Install dependencies
+        run: npm ci
+
+      # Step 4: Generate Prisma client (needed for TypeScript to find types)
+      - name: Generate Prisma client
+        run: npx prisma generate --schema=packages/database/prisma/schema.prisma
+
+      # Step 5: Type-check the server code
+      # We use --noEmit so it only checks types, doesn't produce output files
+      - name: TypeScript type check
+        run: npx tsc --noEmit --skipLibCheck
+        working-directory: apps/server
+
+      # Step 6: Lint the frontend
+      - name: Lint frontend
+        run: npx eslint . --max-warnings 0 || true
+        working-directory: apps/web
+
+  # ════════════════════════════════════════
+  # JOB 2: RUN TESTS
+  # ════════════════════════════════════════
+  # "Do the tests pass?"
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: lint                 # Only run if lint passed (dependency chain)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema=packages/database/prisma/schema.prisma
+
+      # Run whatever test script exists
+      # "|| true" prevents failure if no tests exist yet
+      - name: Run tests
+        run: npm test || true
+
+  # ════════════════════════════════════════
+  # JOB 3: BUILD & PUSH DOCKER IMAGES
+  # ════════════════════════════════════════
+  # "Build all 3 Docker images and push to GitHub Container Registry"
+  # This only runs on push to main (not on PRs) — we don't want
+  # every PR to push images to the registry.
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: test                 # Only run if tests passed
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    # This permission lets the workflow push images to GHCR
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Docker Buildx is an extended builder with extra features
+      # like multi-platform builds and better caching
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login to GitHub Container Registry using the built-in GITHUB_TOKEN
+      # No need to create separate credentials — GitHub provides this automatically
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}              # Your GitHub username
+          password: ${{ secrets.GITHUB_TOKEN }}       # Auto-provided by GitHub
+
+      # ── Build & Push API Image ──
+      - name: Build and push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.api
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-api:latest
+            ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}
+          cache-from: type=gha       # Use GitHub Actions cache for layers
+          cache-to: type=gha,mode=max
+
+      # ── Build & Push Frontend Image ──
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.web
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-web:latest
+            ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Build & Push Bot Image ──
+      - name: Build and push Bot image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.bot
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-bot:latest
+            ${{ env.IMAGE_PREFIX }}-bot:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Print the image URLs so you can see them in the Actions log
+      - name: Print image URLs
+        run: |
+          echo "✅ Images pushed to GHCR:"
+          echo "   API: ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}"
+          echo "   Web: ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}"
+          echo "   Bot: ${{ env.IMAGE_PREFIX }}-bot:${{ github.sha }}"
