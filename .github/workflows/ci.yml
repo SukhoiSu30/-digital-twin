@@ -28,7 +28,8 @@ on:
 # Available to ALL jobs in this workflow
 env:
   REGISTRY: ghcr.io                          # GitHub Container Registry
-  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/digital-twin
+  # github.repository_owner can have uppercase letters, but Docker
+  # registries require all lowercase. We convert it in a step below.
 
 # ── JOBS ──
 # Jobs run in PARALLEL by default. We use "needs" to create dependencies.
@@ -132,6 +133,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Convert GitHub owner to lowercase (Docker registries require lowercase)
+      - name: Set image prefix (lowercase)
+        run: echo "IMAGE_PREFIX=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/digital-twin" >> $GITHUB_ENV
+
       # Docker Buildx is an extended builder with extra features
       # like multi-platform builds and better caching
       - name: Set up Docker Buildx
@@ -188,7 +193,7 @@ jobs:
       # Print the image URLs so you can see them in the Actions log
       - name: Print image URLs
         run: |
-          echo "✅ Images pushed to GHCR:"
+          echo "Images pushed to GHCR:"
           echo "   API: ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}"
           echo "   Web: ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}"
           echo "   Bot: ${{ env.IMAGE_PREFIX }}-bot:${{ github.sha }}"
