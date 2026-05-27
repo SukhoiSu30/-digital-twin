@@ -38,3 +38,9 @@ coverage/
 # Bot debug screenshots
 bot-local/debug-*.png
 bot-local/zoom-*.png
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
