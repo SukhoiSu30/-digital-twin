@@ -1,0 +1,27 @@
+{
+  "manifest_version": 2,
+  "name": "DT Audio Capture",
+  "version": "1.0",
+  "description": "Captures tab audio for Digital Twin meeting bot",
+  "permissions": ["tabCapture", "tabs"],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.zoom.us/*", "*://zoom.us/*", "*://app.zoom.us/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "browser_action": {
+    "default_title": "Toggle DT Audio Capture"
+  },
+  "commands": {
+    "_execute_browser_action": {
+      "suggested_key": { "default": "Alt+Shift+R" }
+    }
+  }
+}

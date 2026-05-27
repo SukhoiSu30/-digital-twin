@@ -1,0 +1,34 @@
+# Dependencies - each Docker build installs its own
+node_modules
+*/node_modules
+
+# Git history - not needed inside container
+.git
+.gitignore
+
+# Environment files - secrets should never be baked into images
+.env
+.env.*
+render.env
+
+# Build outputs - Docker builds fresh
+dist
+build
+.next
+
+# IDE and OS files
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker files themselves
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Documentation and tests - not needed in production
+*.md
+tests
+coverage

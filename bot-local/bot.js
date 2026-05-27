@@ -13,6 +13,7 @@
 
 require("dotenv").config();
 const puppeteer = require("puppeteer");
+const path = require("path");
 
 // ─── Configuration ──────────────────────────────────────
 const API_URL = process.env.API_URL || "https://digital-twin-api-13y1.onrender.com/api";
@@ -133,18 +134,21 @@ async function joinMeeting(meeting) {
 
   try {
     // ── Launch Chrome ──
+    const extensionPath = path.resolve(__dirname, "extension");
+
     browser = await puppeteer.launch({
       headless: false,
       defaultViewport: { width: 1280, height: 720 },
       args: [
         "--disable-notifications",
         "--use-fake-ui-for-media-stream",
-        "--use-fake-device-for-media-stream",
         "--autoplay-policy=no-user-gesture-required",
         "--no-first-run",
         "--no-default-browser-check",
-        "--disable-extensions",
         "--disable-popup-blocking",
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+        "--auto-select-desktop-capture-source=Zoom",
       ],
     });
 
@@ -162,9 +166,9 @@ async function joinMeeting(meeting) {
       "microphone", "camera", "notifications",
     ]);
 
-    // ── Set up WebRTC audio interception BEFORE navigating to Zoom ──
+    // ── Set up audio capture bridge BEFORE navigating to Zoom ──
     if (useDeepgram) {
-      await setupWebRTCInterception(page, id);
+      await setupAudioCapture(page, id);
     }
 
     // ── Build Zoom Web Client URL ──
@@ -419,13 +423,69 @@ async function joinMeeting(meeting) {
       activeBots.set(id, { status: "active", browser, page });
       await page.screenshot({ path: "debug-step3-in-meeting.png" });
 
+      // ── Mute mic & turn off camera (since we removed fake devices) ──
+      await page.evaluate(() => {
+        // Try muting mic
+        const muteSelectors = [
+          'button[aria-label*="Mute"]',
+          'button[aria-label*="mute"]',
+          'button[aria-label*="Unmute"]',
+          'button[class*="mute"]',
+        ];
+        for (const sel of muteSelectors) {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+            // Only click if currently unmuted (label says "Mute" = currently unmuted)
+            if (label.includes("mute") && !label.includes("unmute")) {
+              btn.click();
+              console.log("[DT-Bot] Mic muted");
+            }
+            break;
+          }
+        }
+
+        // Try stopping video
+        const videoSelectors = [
+          'button[aria-label*="Stop Video"]',
+          'button[aria-label*="stop video"]',
+          'button[aria-label*="Stop video"]',
+        ];
+        for (const sel of videoSelectors) {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            btn.click();
+            console.log("[DT-Bot] Camera stopped");
+            break;
+          }
+        }
+      });
+      await delay(1000);
+
       // ── Start Transcription ──
-      await startTranscription(page, id);
+      await startTranscription(browser, page, id);
 
       // ── Periodic transcript flush ──
       const transcriptFlush = setInterval(async () => {
         try { await flushTranscripts(page, id); } catch (e) {}
       }, 10000);
+
+      // ── Page navigation / crash detection ──
+      let meetingEndedByNav = false;
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) {
+          const newUrl = frame.url().toLowerCase();
+          if (
+            newUrl.includes("/wc/leave") ||
+            newUrl.includes("/postattendee") ||
+            newUrl.includes("meeting-ended") ||
+            (!newUrl.includes("zoom.us/wc/") && !newUrl.includes("app.zoom.us/wc/"))
+          ) {
+            console.log(`[Bot] Page navigated away from meeting: ${newUrl}`);
+            meetingEndedByNav = true;
+          }
+        }
+      });
 
       // ── Monitor for meeting end ──
       const endCheck = setInterval(async () => {
@@ -442,22 +502,59 @@ async function joinMeeting(meeting) {
           }
 
           const ended = await page.evaluate(() => {
-            const text = document.body.innerText || "";
-            return (
-              text.includes("meeting has ended") ||
-              text.includes("host has ended") ||
-              text.includes("you have been removed") ||
-              text.includes("The host ended this meeting") ||
-              text.includes("This meeting has been ended") ||
-              text.includes("Meeting Ended")
+            const text = (document.body.innerText || "").toLowerCase();
+            const url = window.location.href.toLowerCase();
+
+            // 1. Check page text for end indicators
+            const endPhrases = [
+              "meeting has ended",
+              "host has ended",
+              "host ended this meeting",
+              "this meeting has been ended",
+              "meeting ended",
+              "you have been removed",
+              "removed from the meeting",
+              "meeting has been terminated",
+              "the meeting is over",
+              "thank you for attending",
+              "return to home",
+              "this meeting is not available",
+              "meeting is no longer available",
+              "invalid meeting id",
+              "this meeting id is not valid",
+              "meeting does not exist",
+              "leave meeting",  // Zoom sometimes shows this after ending
+            ];
+            const textMatch = endPhrases.some((phrase) => text.includes(phrase));
+
+            // 2. Check if URL changed away from the meeting (redirected to post-meeting page)
+            const urlMatch =
+              url.includes("/wc/leave") ||
+              url.includes("/postattendee") ||
+              url.includes("/meeting-ended") ||
+              url.includes("reason=") ||
+              (!url.includes("/wc/") && !url.includes("zoom.us/wc"));
+
+            // 3. Check if the Zoom meeting UI elements are gone (meeting container disappeared)
+            const meetingUI = document.querySelector(
+              '[class*="meeting-app"], [class*="meeting-client"], #wc-container-left, ' +
+              'button[aria-label*="Mute"], button[aria-label*="mute"], [class*="footer__inner"]'
             );
+            // If we previously had meeting UI but now it's gone, meeting ended
+            const uiGone = !meetingUI && window.__dtWasInMeeting;
+
+            // Mark that we were in a meeting (for uiGone detection)
+            if (meetingUI) window.__dtWasInMeeting = true;
+
+            return textMatch || urlMatch || uiGone;
           });
 
-          if (ended) {
+          if (ended || meetingEndedByNav) {
             clearInterval(endCheck);
             clearInterval(transcriptFlush);
-            console.log(`\n[Bot] Meeting ended: "${title}"`);
+            console.log(`\n[Bot] Meeting ended: "${title}" (detected by: ${ended ? "page content" : "navigation"})`);
 
+            await page.screenshot({ path: "debug-meeting-ended.png" }).catch(() => {});
             await flushTranscripts(page, id).catch(() => {});
             closeDeepgram(id);
             await reportEnded(id);
@@ -500,15 +597,16 @@ async function joinMeeting(meeting) {
 // ═══════════════════════════════════════════════════════════
 
 /**
- * Set up WebRTC interception BEFORE Zoom loads.
+ * Set up audio capture bridge BEFORE Zoom loads.
  *
- * This patches RTCPeerConnection so when Zoom receives audio
- * from other participants, we intercept the audio track,
- * capture raw PCM via AudioContext + ScriptProcessor,
- * and send it to Node.js for Deepgram streaming.
+ * Uses a Chrome extension (loaded via --load-extension) that captures
+ * ALL audio from the tab using chrome.tabCapture.capture().
+ * The extension sends base64 PCM chunks via content script → postMessage.
+ * This function sets up the page-side listener to receive those chunks
+ * and forward them to Node.js via exposeFunction.
  */
-async function setupWebRTCInterception(page, meetingId) {
-  // Expose a function so the browser page can send audio data to Node.js
+async function setupAudioCapture(page, meetingId) {
+  // Expose function so the page can send audio data to Node.js → Deepgram
   await page.exposeFunction("__dtSendAudioChunk", (base64PCM) => {
     const ws = deepgramConnections.get(meetingId);
     if (ws && ws.readyState === 1) { // WebSocket.OPEN
@@ -517,91 +615,47 @@ async function setupWebRTCInterception(page, meetingId) {
     }
   });
 
-  // Inject RTCPeerConnection patch that runs on EVERY new document
-  await page.evaluateOnNewDocument(() => {
-    if (window.__dtRTCPatched) return;
-    window.__dtRTCPatched = true;
-
-    const OrigRTC = window.RTCPeerConnection;
-
-    window.RTCPeerConnection = function (...args) {
-      const pc = new OrigRTC(...args);
-
-      pc.addEventListener("track", (event) => {
-        if (event.track.kind === "audio" && !window.__dtAudioCaptureActive) {
-          window.__dtAudioCaptureActive = true;
-          console.log("[DT-Bot] WebRTC audio track intercepted!");
-
-          const stream = event.streams[0] || new MediaStream([event.track]);
-
-          try {
-            const ctx = new AudioContext({ sampleRate: 16000 });
-            const source = ctx.createMediaStreamSource(stream);
-
-            // ScriptProcessorNode captures raw PCM for Deepgram
-            const processor = ctx.createScriptProcessor(4096, 1, 1);
-
-            processor.onaudioprocess = (e) => {
-              if (!window.__dtRecording) return;
-
-              const float32 = e.inputBuffer.getChannelData(0);
-
-              // Convert Float32 [-1,1] → Int16 [-32768,32767] (Deepgram linear16)
-              const int16 = new Int16Array(float32.length);
-              for (let i = 0; i < float32.length; i++) {
-                const s = Math.max(-1, Math.min(1, float32[i]));
-                int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-              }
-
-              // Convert to base64 for transfer to Node.js
-              const bytes = new Uint8Array(int16.buffer);
-              let binary = "";
-              const chunkSize = 8192;
-              for (let i = 0; i < bytes.length; i += chunkSize) {
-                const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-                for (let j = 0; j < slice.length; j++) {
-                  binary += String.fromCharCode(slice[j]);
-                }
-              }
-
-              try {
-                window.__dtSendAudioChunk(btoa(binary));
-              } catch (err) {
-                // Function not available yet
-              }
-            };
-
-            source.connect(processor);
-            processor.connect(ctx.destination); // Keep audio playing
-
-            console.log("[DT-Bot] Audio capture pipeline: WebRTC → PCM16 → Deepgram");
-          } catch (err) {
-            console.error("[DT-Bot] Audio capture setup failed:", err.message);
-          }
-        }
-      });
-
-      return pc;
-    };
-
-    // Preserve prototype and static methods
-    window.RTCPeerConnection.prototype = OrigRTC.prototype;
-    if (OrigRTC.generateCertificate) {
-      window.RTCPeerConnection.generateCertificate = OrigRTC.generateCertificate;
-    }
-
-    console.log("[DT-Bot] RTCPeerConnection patched for audio interception");
+  // Expose a logging function so we can see extension messages in Node.js terminal
+  await page.exposeFunction("__dtLog", (msg) => {
+    console.log(`[Page] ${msg}`);
   });
 
-  console.log(`[Bot] WebRTC audio interception set up for meeting ${meetingId}`);
+  // Set up page-level listener to receive audio from the extension's content script
+  await page.evaluateOnNewDocument(() => {
+    let chunkCount = 0;
+
+    window.addEventListener("message", (event) => {
+      // Audio chunks from the extension
+      if (event.data?.type === "__DT_AUDIO__" && window.__dtSendAudioChunk) {
+        try {
+          window.__dtSendAudioChunk(event.data.data);
+          chunkCount++;
+          if (chunkCount <= 3 || chunkCount % 500 === 0) {
+            window.__dtLog && window.__dtLog(`Audio chunk #${chunkCount} forwarded to Deepgram`);
+          }
+        } catch (e) {}
+      }
+
+      // Capture status updates
+      if (event.data?.type === "__DT_CAPTURE_STATUS__") {
+        const status = event.data.success ? "ACTIVE" : "FAILED";
+        const err = event.data.error || "";
+        window.__dtLog && window.__dtLog(`Tab audio capture: ${status} ${err}`);
+      }
+    });
+  });
+
+  console.log(`[Bot] Audio capture bridge configured for meeting ${meetingId}`);
 }
 
 /**
  * Start transcription after joining the meeting.
- * Deepgram mode: Connect WebSocket, audio already flowing from WebRTC patch.
- * Fallback mode: Use Web Speech API.
+ * Tries multiple audio capture methods in order:
+ *   1. Chrome extension tabCapture via CDP (most reliable)
+ *   2. getDisplayMedia in page via CDP (no extension needed)
+ *   3. Web Speech API (basic fallback)
  */
-async function startTranscription(page, meetingId) {
+async function startTranscription(browser, page, meetingId) {
   // Initialize transcript storage on the page
   await page.evaluate(() => {
     window.__dtTranscripts = window.__dtTranscripts || [];
@@ -612,10 +666,213 @@ async function startTranscription(page, meetingId) {
 
   if (useDeepgram) {
     console.log(`[Bot] Starting Deepgram Nova-2 streaming transcription...`);
+
+    // Connect to Deepgram WebSocket
     await startDeepgramStream(meetingId);
+
+    let captureSuccess = false;
+
+    // ── Method A: Chrome extension tabCapture via CDP ──
+    try {
+      captureSuccess = await triggerExtensionCapture(browser);
+    } catch (err) {
+      console.log(`[Bot] Extension capture error: ${err.message}`);
+    }
+
+    // ── Method B: getDisplayMedia via CDP (fallback) ──
+    if (!captureSuccess) {
+      console.log(`[Bot] Trying getDisplayMedia capture...`);
+      try {
+        captureSuccess = await triggerDisplayMediaCapture(page);
+      } catch (err) {
+        console.log(`[Bot] getDisplayMedia error: ${err.message}`);
+      }
+    }
+
+    if (captureSuccess) {
+      console.log(`[Bot] Tab audio capture ACTIVE — streaming to Deepgram`);
+    } else {
+      console.log(`[Bot] Audio capture failed. Falling back to Web Speech API.`);
+      closeDeepgram(meetingId);
+      await startWebSpeechFallback(page, meetingId);
+    }
   } else {
     console.log(`[Bot] Starting Web Speech API transcription (fallback)...`);
     await startWebSpeechFallback(page, meetingId);
+  }
+}
+
+/**
+ * Method A: Trigger tab audio capture via the Chrome extension's background page.
+ * Uses CDP Runtime.evaluate with userGesture=true to satisfy the invocation requirement.
+ */
+async function triggerExtensionCapture(browser) {
+  const targets = await browser.targets();
+  const bgTarget = targets.find((t) => t.type() === "background_page");
+
+  if (!bgTarget) {
+    console.log("[Bot] Extension background page not found");
+    return false;
+  }
+
+  const client = await bgTarget.createCDPSession();
+
+  // Get the active Zoom tab ID
+  const { result: tabResult } = await client.send("Runtime.evaluate", {
+    expression: `new Promise(r => chrome.tabs.query({active:true,currentWindow:true}, t => r(t[0]?.id || null)))`,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  });
+
+  const tabId = tabResult.value;
+  if (!tabId) {
+    console.log("[Bot] Could not find active tab ID");
+    return false;
+  }
+
+  console.log(`[Bot] Zoom tab ID: ${tabId} — triggering tabCapture via CDP...`);
+
+  // Trigger capture with userGesture flag (bypasses invocation requirement)
+  const { result: captureResult } = await client.send("Runtime.evaluate", {
+    expression: `startCapture(${tabId})`,
+    userGesture: true,
+  });
+
+  // Wait and check if capture started
+  await delay(3000);
+
+  const { result: statusResult } = await client.send("Runtime.evaluate", {
+    expression: "capturing",
+    returnByValue: true,
+  });
+
+  if (statusResult.value === true) {
+    console.log("[Bot] Extension tabCapture STARTED via CDP");
+    return true;
+  } else {
+    console.log("[Bot] Extension tabCapture did not start");
+    return false;
+  }
+}
+
+/**
+ * Method B: Use getDisplayMedia to capture tab audio directly in the page.
+ * Uses preferCurrentTab to capture THIS tab (which includes audio).
+ * The --auto-select-desktop-capture-source=Zoom flag auto-approves the picker.
+ * CDP userGesture=true satisfies the user gesture requirement.
+ */
+async function triggerDisplayMediaCapture(page) {
+  const client = await page.target().createCDPSession();
+
+  const { result } = await client.send("Runtime.evaluate", {
+    expression: `
+      (async () => {
+        const log = window.__dtLog || console.log.bind(console);
+        try {
+          log('getDisplayMedia: requesting stream with preferCurrentTab...');
+
+          const stream = await navigator.mediaDevices.getDisplayMedia({
+            audio: true,
+            video: true,
+            preferCurrentTab: true,
+            selfBrowserSurface: 'include'
+          });
+
+          const videoTracks = stream.getVideoTracks();
+          const audioTracks = stream.getAudioTracks();
+          log('getDisplayMedia: got ' + videoTracks.length + ' video, ' + audioTracks.length + ' audio tracks');
+
+          // Stop video track — we only need audio
+          videoTracks.forEach(t => t.stop());
+
+          if (audioTracks.length === 0) {
+            return { success: false, error: 'No audio tracks in captured stream' };
+          }
+
+          const audioTrack = audioTracks[0];
+          log('getDisplayMedia: audio track label=' + audioTrack.label + ' readyState=' + audioTrack.readyState);
+
+          const audioStream = new MediaStream([audioTrack]);
+          const ctx = new AudioContext({ sampleRate: 16000 });
+          const source = ctx.createMediaStreamSource(audioStream);
+          const processor = ctx.createScriptProcessor(4096, 1, 1);
+
+          // Check if __dtSendAudioChunk is available
+          const hasSendFn = typeof window.__dtSendAudioChunk === 'function';
+          log('getDisplayMedia: __dtSendAudioChunk available = ' + hasSendFn);
+
+          let count = 0;
+          let nonSilentCount = 0;
+
+          processor.onaudioprocess = (e) => {
+            const float32 = e.inputBuffer.getChannelData(0);
+
+            // Check if audio has actual sound (not just silence)
+            let maxAmp = 0;
+            for (let i = 0; i < float32.length; i += 64) {
+              const amp = Math.abs(float32[i]);
+              if (amp > maxAmp) maxAmp = amp;
+            }
+            const hasSoundData = maxAmp > 0.001;
+            if (hasSoundData) nonSilentCount++;
+
+            // Convert Float32 → Int16 (linear16 for Deepgram)
+            const int16 = new Int16Array(float32.length);
+            for (let i = 0; i < float32.length; i++) {
+              const s = Math.max(-1, Math.min(1, float32[i]));
+              int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            const bytes = new Uint8Array(int16.buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+
+            count++;
+            if (count <= 5 || count % 200 === 0) {
+              const logFn = window.__dtLog || console.log.bind(console);
+              logFn('Audio chunk #' + count + ' maxAmp=' + maxAmp.toFixed(4) + ' nonSilent=' + nonSilentCount + '/' + count);
+            }
+
+            try {
+              if (window.__dtSendAudioChunk) {
+                window.__dtSendAudioChunk(btoa(binary));
+              }
+            } catch(err) {
+              if (count <= 3) {
+                const logFn = window.__dtLog || console.log.bind(console);
+                logFn('__dtSendAudioChunk error: ' + err.message);
+              }
+            }
+          };
+
+          source.connect(processor);
+          processor.connect(ctx.destination);
+
+          audioTrack.onended = () => {
+            const logFn = window.__dtLog || console.log.bind(console);
+            logFn('getDisplayMedia audio track ended. Total chunks=' + count + ' nonSilent=' + nonSilentCount);
+          };
+
+          return { success: true };
+        } catch (e) {
+          log('getDisplayMedia error: ' + e.message);
+          return { success: false, error: e.message };
+        }
+      })()
+    `,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  });
+
+  if (result.value?.success) {
+    console.log("[Bot] getDisplayMedia capture STARTED");
+    return true;
+  } else {
+    console.log(`[Bot] getDisplayMedia failed: ${result.value?.error}`);
+    return false;
   }
 }
 

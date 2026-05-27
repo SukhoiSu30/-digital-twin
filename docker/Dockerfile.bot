@@ -1,0 +1,30 @@
+# ============================================================
+# BOT WORKER
+# ============================================================
+# The bot is plain JavaScript (not TypeScript), so we don't need
+# a multi-stage build. Single stage is fine here.
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY bot-local/package.json bot-local/package-lock.json ./
+
+# Install production dependencies only
+RUN npm ci --only=production
+
+# Copy bot source code
+COPY bot-local/bot.js ./
+COPY bot-local/extension/ ./extension/
+
+# Security: non-root user
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -S appuser -u 1001 -G appgroup
+
+USER appuser
+
+# The bot polls the API, no port needed
+# But we add a health endpoint for monitoring
+EXPOSE 3001
+
+CMD ["node", "bot.js"]

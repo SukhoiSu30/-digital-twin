@@ -1,27 +1,42 @@
+# ================================================================
+# Docker Compose — Digital Twin (Full Stack)
+# ================================================================
+# This file defines ALL services and how they connect.
+# Run with: docker compose up -d
+# Stop with: docker compose down
+# View logs: docker compose logs -f api
+# ================================================================
+
 services:
-  # PostgreSQL Database
+
+  # ── 1. PostgreSQL Database ──
+  # Your app's main database. Data persists in a Docker volume
+  # so it survives container restarts.
   postgres:
-    image: postgres:16-alpine
-    container_name: digital-twin-db
-    restart: unless-stopped
+    image: postgres:16-alpine       # Official PostgreSQL image
+    container_name: dt-postgres
+    restart: unless-stopped          # Auto-restart on crash (not manual stop)
     ports:
-      - "5432:5432"
+      - "5432:5432"                  # host:container — access from your machine
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
       POSTGRES_DB: digital_twin
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data   # Named volume = data persists
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - dt-network
 
-  # Redis (for BullMQ job scheduling)
+  # ── 2. Redis (Job Queue) ──
+  # BullMQ uses Redis to manage meeting bot job queues.
   redis:
     image: redis:7-alpine
-    container_name: digital-twin-redis
+    container_name: dt-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -32,7 +47,82 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - dt-network
 
+  # ── 3. Backend API ──
+  # Your Express server. Built from Dockerfile.api.
+  # "build.context: ." means Docker sends the ENTIRE project root
+  # to the Docker engine (respecting .dockerignore).
+  api:
+    build:
+      context: .                              # Project root (monorepo needs access to packages/)
+      dockerfile: docker/Dockerfile.api       # Which Dockerfile to use
+    container_name: dt-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/digital_twin
+      # ↑ "postgres" here refers to the SERVICE NAME above, not localhost
+      # Docker creates DNS entries: container name → IP address
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy            # Wait for DB to be ready
+      redis:
+        condition: service_healthy            # Wait for Redis to be ready
+    networks:
+      - dt-network
+
+  # ── 4. Frontend (React + Nginx) ──
+  # Built from Dockerfile.web. Nginx serves the static files
+  # and proxies /api/ requests to the API container.
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        VITE_API_URL: http://localhost:3000   # Baked into React at build time
+    container_name: dt-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"                               # Access at http://localhost
+    depends_on:
+      - api
+    networks:
+      - dt-network
+
+  # ── 5. Bot Worker ──
+  # The meeting bot that joins Zoom calls.
+  bot-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bot
+    container_name: dt-bot
+    restart: unless-stopped
+    environment:
+      - API_URL=http://api:3000/api          # Talks to API via Docker network
+      - BOT_SECRET=${BOT_SECRET:-dt-bot-secret-2024}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+    depends_on:
+      - api
+    networks:
+      - dt-network
+
+# ── Volumes ──
+# Named volumes persist data even when containers are deleted.
+# "docker compose down" keeps volumes. "docker compose down -v" deletes them.
 volumes:
   postgres_data:
   redis_data:
+
+# ── Network ──
+# All services on the same network can talk to each other by service name.
+# "api" can reach "postgres" at hostname "postgres", port 5432.
+# This is Docker's built-in DNS — no IP addresses needed.
+networks:
+  dt-network:
+    driver: bridge

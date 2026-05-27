@@ -1,0 +1,51 @@
+# ============================================================
+# STAGE 1: BUILD the React app
+# ============================================================
+# Installs dependencies, runs "vite build" to create static HTML/JS/CSS
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files first (cache optimization)
+COPY package.json package-lock.json ./
+COPY apps/web/package.json ./apps/web/
+
+# Install all dependencies (need dev deps for Vite build)
+RUN npm ci --include=dev
+
+# Copy source code
+COPY apps/web/ ./apps/web/
+
+# ARG = build-time variable (passed with --build-arg)
+# This bakes the API URL into the React app during build
+# Different per environment: dev uses localhost, prod uses real URL
+ARG VITE_API_URL=http://localhost:3000
+ENV VITE_API_URL=$VITE_API_URL
+
+# Build React → static files (HTML, JS, CSS)
+# Output goes to apps/web/dist/
+RUN npm run build -w apps/web
+
+# ============================================================
+# STAGE 2: SERVE with Nginx
+# ============================================================
+# React is just static files. We don't need Node.js to serve them.
+# Nginx is a web server that's 10x faster at serving static files
+# and uses 5MB RAM vs 50MB for Node.
+FROM nginx:1.25-alpine AS production
+
+# Copy the built static files to Nginx's default serve directory
+COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
+
+# Copy our custom Nginx configuration
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+
+# Nginx listens on port 80
+EXPOSE 80
+
+# Health check for Nginx
+HEALTHCHECK --interval=30s --timeout=3s \
+  CMD wget --spider -q http://localhost || exit 1
+
+# Start Nginx in foreground (required for Docker — if it backgrounds, container exits)
+CMD ["nginx", "-g", "daemon off;"]
