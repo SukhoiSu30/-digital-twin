@@ -1,0 +1,68 @@
+# ================================================================
+# REDIS — Job Queue (Deployment + Service)
+# ================================================================
+# Redis is simpler than Postgres — we use a Deployment instead
+# of StatefulSet because our Redis data (job queue) is ephemeral.
+# If Redis restarts, BullMQ re-queues jobs automatically.
+# ================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: digital-twin
+      component: redis
+  template:
+    metadata:
+      labels:
+        app: digital-twin
+        component: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+  selector:
+    app: digital-twin
+    component: redis

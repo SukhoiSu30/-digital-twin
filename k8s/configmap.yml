@@ -1,0 +1,31 @@
+# ================================================================
+# CONFIGMAP — Non-sensitive configuration for your app
+# ================================================================
+# ConfigMaps store configuration data as key-value pairs.
+# They're injected into containers as environment variables
+# or mounted as files.
+#
+# ConfigMap = non-sensitive config (NODE_ENV, PORT, URLs)
+# Secret    = sensitive data (passwords, API keys, tokens)
+#
+# Like "environment:" in docker-compose, but for Kubernetes.
+# ================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: api
+data:
+  # These become environment variables in the container
+  NODE_ENV: "production"
+  PORT: "3000"
+  FRONTEND_URL: "http://localhost"
+
+  # In Kubernetes, services are reachable by their service name
+  # Just like Docker Compose DNS! Same concept, different platform.
+  # "postgres-service" resolves to the Postgres pod's IP
+  # "redis-service" resolves to the Redis pod's IP

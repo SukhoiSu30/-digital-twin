@@ -1,0 +1,79 @@
+# ================================================================
+# BOT WORKER — Meeting Bot (Deployment, NO Service)
+# ================================================================
+# The bot is a background worker — it pulls jobs from Redis/BullMQ
+# and processes them. It doesn't receive HTTP traffic, so it
+# does NOT need a Service!
+#
+# Think of it like a factory worker who checks a job board (Redis)
+# and works on tasks, vs a receptionist (API) who takes requests.
+#
+# No Service = no one can send traffic to it
+# No ports = it only makes outgoing connections
+# ================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bot
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: bot
+spec:
+  replicas: 1                          # Single worker for now
+  selector:
+    matchLabels:
+      app: digital-twin
+      component: bot
+  template:
+    metadata:
+      labels:
+        app: digital-twin
+        component: bot
+    spec:
+      # Wait for both Postgres AND Redis before starting
+      initContainers:
+        - name: wait-for-dependencies
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for postgres-service..."
+              until nc -z postgres-service 5432; do sleep 2; done
+              echo "Postgres ready!"
+              echo "Waiting for redis-service..."
+              until nc -z redis-service 6379; do sleep 2; done
+              echo "Redis ready!"
+
+      containers:
+        - name: bot
+          image: digital-twin-bot:latest
+          imagePullPolicy: Never
+          # No ports! The bot doesn't serve HTTP traffic.
+          # It only connects OUT to Redis and Postgres.
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          # ── Liveness Probe (exec) ──
+          # Since the bot has no HTTP endpoint, we use an exec probe.
+          # This runs a command inside the container to check health.
+          # "Is the Node.js process still running?"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "pgrep -x node || exit 1"
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

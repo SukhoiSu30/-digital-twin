@@ -1,0 +1,50 @@
+# ================================================================
+# FRONTEND NGINX CONFIG — Kubernetes version
+# ================================================================
+# In Docker Compose, Nginx proxied /api/* to the backend.
+# In Kubernetes, the Ingress controller handles API routing!
+# So this config ONLY serves static files — no proxy_pass needed.
+#
+# We mount this ConfigMap as a file inside the container,
+# replacing the default nginx.conf. This is how you customize
+# config in Kubernetes without rebuilding the Docker image!
+# ================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-config
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: frontend
+data:
+  # The key becomes the filename when mounted
+  default.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # SPA routing — same as Docker version
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        # No /api/ proxy block needed!
+        # In Kubernetes, the Ingress routes /api/* to api-service directly.
+        # The frontend only serves static files.
+
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # Gzip compression
+        gzip on;
+        gzip_types text/plain text/css application/json application/javascript text/xml;
+        gzip_min_length 1000;
+    }

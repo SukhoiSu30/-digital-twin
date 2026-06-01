@@ -1,0 +1,19 @@
+# ================================================================
+# NAMESPACE — Logical isolation for your project
+# ================================================================
+# A namespace is like a folder in Kubernetes. It groups related
+# resources together and prevents naming collisions.
+#
+# Without namespaces, all resources go into "default" — messy
+# when multiple projects share a cluster.
+#
+# Think of it like: database schemas, or Docker Compose project names.
+# ================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: digital-twin
+  labels:
+    app: digital-twin
+    managed-by: kubectl

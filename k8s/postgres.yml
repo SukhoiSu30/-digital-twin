@@ -1,0 +1,124 @@
+# ================================================================
+# POSTGRESQL — Database (StatefulSet + Service + PVC)
+# ================================================================
+# In production, use managed databases (RDS). In development
+# and for learning Kubernetes, we run Postgres in the cluster.
+#
+# We use a StatefulSet (not Deployment) for databases because:
+#   - Pods get stable, persistent hostnames (postgres-0, postgres-1)
+#   - Storage persists across pod restarts
+#   - Pods are created/deleted in order (important for replicas)
+#
+# Deployment = stateless apps (API, frontend)
+# StatefulSet = stateful apps (databases, caches)
+# ================================================================
+
+# ── Persistent Volume Claim ──
+# "I need 5GB of persistent storage"
+# Kubernetes finds or creates a volume and binds it to this claim.
+# Data survives pod restarts — like Docker named volumes.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce        # Only one pod can mount this at a time
+  resources:
+    requests:
+      storage: 5Gi         # Request 5 GB of storage
+
+---
+# ── StatefulSet ──
+# Manages the Postgres pod with stable identity and storage
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: postgres
+spec:
+  serviceName: postgres-service    # Links to the headless service below
+  replicas: 1                      # Single instance for dev
+  selector:
+    matchLabels:
+      app: digital-twin
+      component: postgres
+  template:
+    # ── Pod Template ──
+    # This is what the actual pod looks like
+    metadata:
+      labels:
+        app: digital-twin
+        component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine    # Same image as docker-compose
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "digital_twin"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets       # Read from our Secret
+                  key: POSTGRES_PASSWORD
+          # Mount the persistent volume
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+          # Health check — is Postgres accepting connections?
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          # Resource limits — prevent the pod from consuming too much
+          resources:
+            requests:              # Minimum guaranteed resources
+              cpu: 100m            # 0.1 CPU cores
+              memory: 128Mi        # 128 MB RAM
+            limits:                # Maximum allowed resources
+              cpu: 500m            # 0.5 CPU cores
+              memory: 512Mi        # 512 MB RAM
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+
+---
+# ── Service ──
+# Gives Postgres a stable DNS name inside the cluster.
+# Other pods connect to "postgres-service:5432"
+# Same concept as Docker Compose service names!
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: digital-twin
+  labels:
+    app: digital-twin
+    component: postgres
+spec:
+  type: ClusterIP           # Only accessible inside the cluster
+  ports:
+    - port: 5432             # Service port
+      targetPort: 5432       # Container port
+  selector:                  # Route traffic to pods with these labels
+    app: digital-twin
+    component: postgres
