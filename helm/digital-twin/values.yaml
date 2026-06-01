@@ -1,0 +1,111 @@
+# ================================================================
+# VALUES.YAML — Default Configuration
+# ================================================================
+# This is the SINGLE SOURCE OF TRUTH for all configurable values.
+# Instead of editing 9 YAML files, you change values here.
+#
+# Override per environment:
+#   helm install digital-twin ./chart -f values-prod.yaml
+#
+# Or override individual values:
+#   helm install digital-twin ./chart --set api.replicas=5
+# ================================================================
+
+# ── Global Settings ──
+namespace: digital-twin
+
+# ── API Server ──
+api:
+  replicas: 2
+  image:
+    repository: digital-twin-api
+    tag: latest
+    pullPolicy: Never            # Never for Minikube, Always for production
+  port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── Frontend ──
+frontend:
+  replicas: 2
+  image:
+    repository: digital-twin-web
+    tag: latest
+    pullPolicy: Never
+  port: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ── Bot Worker ──
+bot:
+  replicas: 1
+  image:
+    repository: digital-twin-bot
+    tag: latest
+    pullPolicy: Never
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── PostgreSQL ──
+postgres:
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  port: 5432
+  storage: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── Redis ──
+redis:
+  image:
+    repository: redis
+    tag: "7-alpine"
+  port: 6379
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ── Configuration ──
+config:
+  nodeEnv: production
+  port: "3000"
+  frontendUrl: "http://localhost"
+
+# ── Secrets (base64 encoded) ──
+# In production, use external secret managers instead!
+secrets:
+  databaseUrl: cG9zdGdyZXNxbDovL3Bvc3RncmVzOnBhc3N3b3JkQHBvc3RncmVzLXNlcnZpY2U6NTQzMi9kaWdpdGFsX3R3aW4=
+  redisUrl: cmVkaXM6Ly9yZWRpcy1zZXJ2aWNlOjYzNzk=
+  jwtSecret: ZGV2LWp3dC1zZWNyZXQtY2hhbmdlLWluLXByb2R1Y3Rpb24=
+  postgresPassword: cGFzc3dvcmQ=
+
+# ── Ingress ──
+ingress:
+  enabled: true
+  className: nginx
+  enableCors: true

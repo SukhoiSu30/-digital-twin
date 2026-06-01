@@ -1,0 +1,54 @@
+# ================================================================
+# PRODUCTION VALUES — Override defaults for production
+# ================================================================
+# Usage: helm install digital-twin ./helm/digital-twin -f ./helm/digital-twin/values-prod.yaml
+#
+# Only specify values that DIFFER from values.yaml.
+# Everything else inherits the defaults.
+# ================================================================
+
+api:
+  replicas: 3                          # More replicas for production traffic
+  image:
+    repository: ghcr.io/sukhoisu30/digital-twin-api
+    tag: latest
+    pullPolicy: Always                 # Always pull latest from registry
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+frontend:
+  replicas: 3
+  image:
+    repository: ghcr.io/sukhoisu30/digital-twin-web
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+bot:
+  replicas: 2                          # Multiple workers for parallel processing
+  image:
+    repository: ghcr.io/sukhoisu30/digital-twin-bot
+    tag: latest
+    pullPolicy: Always
+
+postgres:
+  storage: 20Gi                        # More storage for production
+  resources:
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+config:
+  nodeEnv: production
+  frontendUrl: "https://digital-twin.yourdomain.com"
