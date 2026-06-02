@@ -1,0 +1,45 @@
+{{/*
+================================================================
+SERVICEMONITOR — Tell Prometheus to scrape our API
+================================================================
+A ServiceMonitor is a custom resource (CRD) created by the
+Prometheus Operator. It tells Prometheus:
+  "Hey, scrape metrics from this Service every 15 seconds"
+
+Without this, Prometheus doesn't know our API exists.
+With this, Prometheus automatically discovers and scrapes it.
+
+Flow:
+  ServiceMonitor → finds Service by labels → Prometheus scrapes pod endpoints
+
+This is how you connect YOUR app to the monitoring stack.
+In production, you'd also expose custom metrics from your API
+(request count, response time, error rate) using a library
+like prom-client (Node.js) or prometheus_client (Python).
+================================================================
+*/}}
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-monitor
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "digital-twin.labels" . | nindent 4 }}
+    component: api
+    # This label is crucial — the Prometheus Operator looks for
+    # ServiceMonitors with "release: monitoring" to know which
+    # ones to pick up. Without it, Prometheus ignores this monitor.
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      {{- include "digital-twin.selectorLabels" . | nindent 6 }}
+      component: api
+  endpoints:
+    - port: "3000"
+      path: /api/metrics          # Endpoint where your app exposes metrics
+      interval: 15s               # Scrape every 15 seconds
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
