@@ -64,32 +64,68 @@ resource "aws_lb_target_group" "api" {
   }
 }
 
-# ── Listener (HTTP) ──
-# Listens on port 80 and forwards to the target group.
-# In production, you'd add an HTTPS listener on port 443
-# with an ACM certificate.
+# ── Frontend Target Group ──
+resource "aws_lb_target_group" "web" {
+  name        = "${var.project_name}-${var.environment}-web-tg"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    enabled             = true
+    path                = "/"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
+  }
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-web-tg"
+  }
+}
+
+# ── Listener (HTTP) with path-based routing ──
+# Same concept as our Kubernetes Ingress!
+# /api/* → API service
+# /*     → Frontend service
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
 
-  # In production, redirect HTTP to HTTPS:
-  # default_action {
-  #   type = "redirect"
-  #   redirect {
-  #     port        = "443"
-  #     protocol    = "HTTPS"
-  #     status_code = "HTTP_301"
-  #   }
-  # }
-
-  # For now, forward directly to API
+  # Default action: send everything to frontend
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
+    target_group_arn = aws_lb_target_group.web.arn
   }
 
   tags = {
     Name = "${var.project_name}-${var.environment}-http-listener"
+  }
+}
+
+# ── Listener Rule: /api/* → API target group ──
+resource "aws_lb_listener_rule" "api" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 100    # Lower number = higher priority
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/api/*"]
+    }
+  }
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-api-rule"
   }
 }

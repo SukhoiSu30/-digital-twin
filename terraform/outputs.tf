@@ -43,6 +43,21 @@ output "ecs_service_name" {
 
 # Useful for CI/CD — these values can be read by GitHub Actions
 # to deploy updated images to the right cluster/service
+output "ecr_api_url" {
+  description = "ECR repository URL for API image"
+  value       = aws_ecr_repository.api.repository_url
+}
+
+output "ecr_web_url" {
+  description = "ECR repository URL for Web image"
+  value       = aws_ecr_repository.web.repository_url
+}
+
+output "ecr_bot_url" {
+  description = "ECR repository URL for Bot image"
+  value       = aws_ecr_repository.bot.repository_url
+}
+
 output "deployment_info" {
   description = "Info needed for CI/CD deployment"
   value = {
@@ -50,5 +65,8 @@ output "deployment_info" {
     cluster      = aws_ecs_cluster.main.name
     service      = aws_ecs_service.api.name
     alb_url      = "http://${aws_lb.main.dns_name}"
+    ecr_api      = aws_ecr_repository.api.repository_url
+    ecr_web      = aws_ecr_repository.web.repository_url
+    ecr_bot      = aws_ecr_repository.bot.repository_url
   }
 }

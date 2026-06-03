@@ -106,7 +106,7 @@ resource "aws_ecs_task_definition" "api" {
   # Container definition — equivalent to a docker-compose service
   container_definitions = jsonencode([{
     name  = "api"
-    image = var.api_image    # ghcr.io/sukhoisu30/digital-twin-api:latest
+    image = "${aws_ecr_repository.api.repository_url}:latest"
 
     # Port mapping — like "ports: 3000:3000" in docker-compose
     portMappings = [{
@@ -121,13 +121,37 @@ resource "aws_ecs_task_definition" "api" {
       {
         name  = "DATABASE_URL"
         value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.postgres.endpoint}/${var.db_name}"
-        # Notice: instead of "postgres:5432" (Docker DNS), we use the
-        # actual RDS endpoint. Terraform fills this in automatically
-        # because we reference aws_db_instance.postgres.endpoint
       },
       {
         name  = "REDIS_URL"
         value = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+      },
+      # Frontend URL for CORS
+      {
+        name  = "FRONTEND_URL"
+        value = "http://${aws_lb.main.dns_name}"
+      },
+      # Microsoft OAuth
+      {
+        name  = "MICROSOFT_CLIENT_ID"
+        value = var.microsoft_client_id
+      },
+      {
+        name  = "MICROSOFT_CLIENT_SECRET"
+        value = var.microsoft_client_secret
+      },
+      {
+        name  = "MICROSOFT_TENANT_ID"
+        value = var.microsoft_tenant_id
+      },
+      {
+        name  = "MICROSOFT_REDIRECT_URI"
+        value = "http://${aws_lb.main.dns_name}/api/auth/microsoft/callback"
+      },
+      # Auth secrets
+      {
+        name  = "JWT_SECRET"
+        value = var.jwt_secret
       },
     ]
 
@@ -147,7 +171,7 @@ resource "aws_ecs_task_definition" "api" {
       interval    = 30
       timeout     = 5
       retries     = 3
-      startPeriod = 10
+      startPeriod = 60    # Increased: prisma db push runs before app starts
     }
   }])
 
@@ -190,5 +214,161 @@ resource "aws_ecs_service" "api" {
 
   tags = {
     Name = "${var.project_name}-${var.environment}-api-service"
+  }
+}
+
+# ================================================================
+# FRONTEND — React + Nginx (ECS Service)
+# ================================================================
+
+resource "aws_cloudwatch_log_group" "web" {
+  name              = "/ecs/${var.project_name}-${var.environment}/web"
+  retention_in_days = 30
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-web-logs"
+  }
+}
+
+resource "aws_ecs_task_definition" "web" {
+  family                   = "${var.project_name}-${var.environment}-web"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name  = "web"
+    image = "${aws_ecr_repository.web.repository_url}:latest"
+
+    portMappings = [{
+      containerPort = 80
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.web.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "web"
+      }
+    }
+
+    healthCheck = {
+      command     = ["CMD-SHELL", "wget --spider -q http://localhost/ || exit 1"]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 10
+    }
+  }])
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-web-task"
+  }
+}
+
+resource "aws_ecs_service" "web" {
+  name            = "${var.project_name}-${var.environment}-web"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.web.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.web.arn
+    container_name   = "web"
+    container_port   = 80
+  }
+
+  depends_on = [aws_lb_listener.http]
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-web-service"
+  }
+}
+
+# ================================================================
+# BOT WORKER — Background job processor (NO load balancer)
+# ================================================================
+
+resource "aws_cloudwatch_log_group" "bot" {
+  name              = "/ecs/${var.project_name}-${var.environment}/bot"
+  retention_in_days = 30
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-bot-logs"
+  }
+}
+
+resource "aws_ecs_task_definition" "bot" {
+  family                   = "${var.project_name}-${var.environment}-bot"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name  = "bot"
+    image = "${aws_ecr_repository.bot.repository_url}:latest"
+
+    # No port mappings — bot is a background worker, no HTTP traffic
+
+    environment = [
+      { name = "NODE_ENV", value = "production" },
+      { name = "PORT", value = "3001" },
+      {
+        name  = "DATABASE_URL"
+        value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.postgres.endpoint}/${var.db_name}"
+      },
+      {
+        name  = "REDIS_URL"
+        value = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+      },
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.bot.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "bot"
+      }
+    }
+  }])
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-bot-task"
+  }
+}
+
+resource "aws_ecs_service" "bot" {
+  name            = "${var.project_name}-${var.environment}-bot"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.bot.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  # No load_balancer block — bot doesn't receive HTTP traffic
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-bot-service"
   }
 }

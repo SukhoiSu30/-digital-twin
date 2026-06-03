@@ -120,6 +120,36 @@ variable "web_image" {
   default     = "ghcr.io/sukhoisu30/digital-twin-web:latest"
 }
 
+# ── Microsoft OAuth ──
+
+variable "microsoft_client_id" {
+  description = "Azure AD app registration client ID"
+  type        = string
+  default     = "placeholder"
+}
+
+variable "microsoft_client_secret" {
+  description = "Azure AD app registration client secret"
+  type        = string
+  sensitive   = true
+  default     = "placeholder"
+}
+
+variable "microsoft_tenant_id" {
+  description = "Azure AD tenant ID (use 'common' for multi-tenant)"
+  type        = string
+  default     = "common"
+}
+
+# ── Auth Secrets ──
+
+variable "jwt_secret" {
+  description = "JWT signing secret"
+  type        = string
+  sensitive   = true
+  default     = "prod-jwt-secret-change-me"
+}
+
 # ── Redis ──
 
 variable "redis_node_type" {

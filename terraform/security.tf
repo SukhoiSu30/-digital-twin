@@ -72,11 +72,19 @@ resource "aws_security_group" "ecs_tasks" {
   # instead of allowing an IP range, you say "allow traffic
   # from any resource that has the ALB security group"
   ingress {
-    description     = "HTTP from ALB only"
+    description     = "API from ALB only"
     from_port       = 3000
     to_port         = 3000
     protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]    # Only from ALB!
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  ingress {
+    description     = "Frontend from ALB only"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   # Allow outbound (to reach database, Redis, internet via NAT)

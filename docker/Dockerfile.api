@@ -60,6 +60,16 @@ RUN npx prisma generate --schema=packages/database/prisma/schema.prisma
 # Copy compiled JavaScript from builder stage
 COPY --from=builder /app/apps/server/dist ./apps/server/dist
 
+# Create startup script that runs migrations then starts the app
+# prisma db push syncs schema → PostgreSQL (creates tables if missing)
+# Running as root here so prisma can write, then exec drops to node user
+RUN echo '#!/bin/sh' > /app/start.sh && \
+    echo 'echo "Running Prisma db push..."' >> /app/start.sh && \
+    echo 'npx prisma db push --schema=packages/database/prisma/schema.prisma --skip-generate' >> /app/start.sh && \
+    echo 'echo "Starting API server..."' >> /app/start.sh && \
+    echo 'exec node apps/server/dist/index.js' >> /app/start.sh && \
+    chmod +x /app/start.sh
+
 # Switch to non-root user
 USER appuser
 
@@ -68,4 +78,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD wget --spider -q http://localhost:3000/api/health || exit 1
 
-CMD ["node", "apps/server/dist/index.js"]
+CMD ["/app/start.sh"]
